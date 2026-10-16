@@ -1,0 +1,12 @@
+{
+  "name": "immersio",
+  "private": true,
+  "description": "Desktop Language Immersion & Comprehensible Input Media Suite (forked from Limusic)",
+  "scripts": {
+    "dev": "npx --prefix ui tauri dev",
+    "dev:desktop": "npx --prefix ui tauri dev",
+    "build": "npx --prefix ui tauri build",
+    "check": "pnpm --prefix ui check",
+    "tauri": "npx --prefix ui tauri"
+  }
+}

@@ -47,9 +47,12 @@
 		openAddToPlaylist,
 		personal,
 		playSong,
-		playback
+		playback,
+		startRadio,
+		np
 	} from '$lib/player.svelte';
-	import { asSong } from '$lib/browse';
+	import { asSong, hrefFor } from '$lib/browse';
+	import { parseYtLink } from '$lib/ytlink';
 	import { appIcon } from '$lib/appicon.svelte';
 	import { thumb } from '$lib/thumb';
 	import { currentLocale, t } from '$lib/i18n.svelte';
@@ -76,7 +79,23 @@
 
 	async function runSearch() {
 		if (!query.trim()) return;
-		const q = query;
+		const q = query.trim();
+		const linkTarget = parseYtLink(q);
+		if (linkTarget) {
+			if (linkTarget.kind === 'song') {
+				playSong({
+					video_id: linkTarget.id,
+					title: 'Memutar Video...',
+					artists: 'YouTube',
+					is_video: true
+				});
+				np.open = true;
+				return;
+			} else {
+				goto(hrefFor({ ...linkTarget, title: '' }));
+				return;
+			}
+		}
 		latest = q;
 		lastQuery = q;
 		noteSearch(q);

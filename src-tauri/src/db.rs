@@ -255,6 +255,52 @@ impl Db {
                 manual          INTEGER NOT NULL DEFAULT 0,
                 updated_at      INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS word_status (
+                lemma       TEXT NOT NULL,
+                language    TEXT NOT NULL DEFAULT 'en',
+                status      TEXT NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                PRIMARY KEY (lemma, language)
+            );
+            CREATE INDEX IF NOT EXISTS ix_word_status_lang_status ON word_status(language, status);
+
+            CREATE TABLE IF NOT EXISTS flashcards (
+                id            TEXT PRIMARY KEY,
+                word          TEXT NOT NULL,
+                lemma         TEXT NOT NULL,
+                sentence      TEXT NOT NULL,
+                translation   TEXT NOT NULL DEFAULT '',
+                source_title  TEXT NOT NULL DEFAULT '',
+                source_url    TEXT NOT NULL DEFAULT '',
+                audio_url     TEXT,
+                image_url     TEXT,
+                anki_note_id  INTEGER,
+                status        TEXT NOT NULL DEFAULT 'mined',
+                created_at    INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_flashcards_lemma ON flashcards(lemma);
+            CREATE INDEX IF NOT EXISTS ix_flashcards_created ON flashcards(created_at);
+
+            CREATE TABLE IF NOT EXISTS dict_cache (
+                word         TEXT NOT NULL,
+                target_lang  TEXT NOT NULL DEFAULT 'id',
+                provider     TEXT NOT NULL,
+                json_data    TEXT NOT NULL,
+                created_at   INTEGER NOT NULL,
+                PRIMARY KEY (word, target_lang, provider)
+            );
+            CREATE INDEX IF NOT EXISTS ix_dict_cache_word ON dict_cache(word);
+
+            CREATE TABLE IF NOT EXISTS ai_cache (
+                cache_key    TEXT PRIMARY KEY,
+                word         TEXT NOT NULL,
+                sentence     TEXT NOT NULL DEFAULT '',
+                category     TEXT NOT NULL,
+                model_used   TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                created_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_ai_cache_word ON ai_cache(word);
             "#,
         )?;
         // Migrate pre-Phase-4 DBs that predate the loudness_db column. Errors ("duplicate column")
@@ -1217,6 +1263,217 @@ impl Db {
         out.sort_by(|a, b| order(a).cmp(&order(b)));
         out
     }
+
+    /// Return a map of lemma -> status ('known' | 'learning' | 'ignored') for the given language.
+    pub fn get_word_statuses(&self, language: &str) -> std::collections::HashMap<String, String> {
+        let conn = self.0.lock().unwrap();
+        let mut out = std::collections::HashMap::new();
+        let sql = "SELECT lemma, status FROM word_status WHERE language = ?1";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            if let Ok(rows) = stmt.query_map([language], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                for (lemma, status) in rows.flatten() {
+                    out.insert(lemma, status);
+                }
+            }
+        }
+        out
+    }
+
+    /// Set word status ('known', 'learning', 'ignored', 'unknown').
+    pub fn set_word_status(&self, lemma: &str, status: &str, language: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        let clean = lemma.trim().to_lowercase();
+        if clean.is_empty() {
+            return Ok(());
+        }
+        if status == "unknown" {
+            conn.execute(
+                "DELETE FROM word_status WHERE lemma = ?1 AND language = ?2",
+                rusqlite::params![clean, language],
+            )?;
+            return Ok(());
+        }
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO word_status(lemma, language, status, updated_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(lemma, language) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at",
+            rusqlite::params![clean, language, status, now],
+        )?;
+        Ok(())
+    }
+
+    /// Bulk mark a list of lemmas as 'known' (e.g. from frequency lists or deck seeds).
+    pub fn bulk_set_known(&self, lemmas: &[String], language: &str) -> Result<usize, rusqlite::Error> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = now_secs();
+        let mut count = 0;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO word_status(lemma, language, status, updated_at) VALUES(?1, ?2, 'known', ?3)
+                 ON CONFLICT(lemma, language) DO UPDATE SET status = 'known', updated_at = excluded.updated_at",
+            )?;
+            for l in lemmas {
+                let clean = l.trim().to_lowercase();
+                if !clean.is_empty() {
+                    stmt.execute(rusqlite::params![clean, language, now])?;
+                    count += 1;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// Return count of known, learning, and ignored words.
+    pub fn get_vocab_counts(&self, language: &str) -> Result<VocabCounts, rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        let mut counts = VocabCounts { known: 0, learning: 0, ignored: 0 };
+        let sql = "SELECT status, COUNT(*) FROM word_status WHERE language = ?1 GROUP BY status";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            if let Ok(rows) = stmt.query_map([language], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?))) {
+                for (status, c) in rows.flatten() {
+                    match status.as_str() {
+                        "known" => counts.known = c,
+                        "learning" => counts.learning = c,
+                        "ignored" => counts.ignored = c,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(counts)
+    }
+
+    /// Insert or update a mined flashcard.
+    pub fn save_flashcard(&self, card: &FlashcardRow) -> Result<(), rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT INTO flashcards(id, word, lemma, sentence, translation, source_title, source_url, audio_url, image_url, anki_note_id, status, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+                translation = excluded.translation,
+                anki_note_id = COALESCE(excluded.anki_note_id, flashcards.anki_note_id),
+                status = excluded.status",
+            rusqlite::params![
+                card.id,
+                card.word,
+                card.lemma,
+                card.sentence,
+                card.translation,
+                card.source_title,
+                card.source_url,
+                card.audio_url,
+                card.image_url,
+                card.anki_note_id,
+                card.status,
+                card.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get recent flashcards.
+    pub fn get_flashcards(&self, limit: usize) -> Result<Vec<FlashcardRow>, rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        let mut out = Vec::new();
+        let sql = "SELECT id, word, lemma, sentence, translation, source_title, source_url, audio_url, image_url, anki_note_id, status, created_at
+                   FROM flashcards ORDER BY created_at DESC LIMIT ?1";
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            let rows = stmt.query_map([limit], |r| {
+                Ok(FlashcardRow {
+                    id: r.get(0)?,
+                    word: r.get(1)?,
+                    lemma: r.get(2)?,
+                    sentence: r.get(3)?,
+                    translation: r.get(4)?,
+                    source_title: r.get(5)?,
+                    source_url: r.get(6)?,
+                    audio_url: r.get(7)?,
+                    image_url: r.get(8)?,
+                    anki_note_id: r.get(9)?,
+                    status: r.get(10)?,
+                    created_at: r.get(11)?,
+                })
+            })?;
+            for c in rows.flatten() {
+                out.push(c);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Look up cached dictionary response.
+    pub fn get_dict_cache(&self, word: &str, target_lang: &str, provider: &str) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        let sql = "SELECT json_data FROM dict_cache WHERE word = ?1 AND target_lang = ?2 AND provider = ?3";
+        conn.query_row(sql, rusqlite::params![word.trim().to_lowercase(), target_lang, provider], |r| r.get(0)).ok()
+    }
+
+    /// Save dictionary response to cache.
+    pub fn save_dict_cache(&self, word: &str, target_lang: &str, provider: &str, json_data: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO dict_cache(word, target_lang, provider, json_data, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(word, target_lang, provider) DO UPDATE SET json_data = excluded.json_data, created_at = excluded.created_at",
+            rusqlite::params![word.trim().to_lowercase(), target_lang, provider, json_data, now],
+        )?;
+        Ok(())
+    }
+
+    /// Clear all cached dictionary entries.
+    pub fn clear_dict_cache(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM dict_cache", [])
+    }
+
+    /// Get count of cached dictionary entries.
+    pub fn get_dict_cache_count(&self) -> usize {
+        let conn = self.0.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM dict_cache", [], |r| r.get(0)).unwrap_or(0)
+    }
+
+    /// Look up cached AI explanation response. Returns (content, model_used).
+    pub fn get_ai_cache(&self, cache_key: &str) -> Option<(String, String)> {
+        let conn = self.0.lock().unwrap();
+        let sql = "SELECT content, model_used FROM ai_cache WHERE cache_key = ?1";
+        conn.query_row(sql, rusqlite::params![cache_key], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    }
+
+    /// Save AI explanation response to cache.
+    pub fn save_ai_cache(
+        &self,
+        cache_key: &str,
+        word: &str,
+        sentence: &str,
+        category: &str,
+        model_used: &str,
+        content: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        let now = now_secs();
+        conn.execute(
+            "INSERT INTO ai_cache(cache_key, word, sentence, category, model_used, content, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(cache_key) DO UPDATE SET model_used = excluded.model_used, content = excluded.content, created_at = excluded.created_at",
+            rusqlite::params![cache_key, word.trim().to_lowercase(), sentence, category, model_used, content, now],
+        )?;
+        Ok(())
+    }
+
+    /// Clear all cached AI explanations.
+    pub fn clear_ai_cache(&self) -> Result<usize, rusqlite::Error> {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM ai_cache", [])
+    }
+
+    /// Get count of cached AI explanations.
+    pub fn get_ai_cache_count(&self) -> usize {
+        let conn = self.0.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM ai_cache", [], |r| r.get(0)).unwrap_or(0)
+    }
 }
 
 const LOCAL_TRACK_UPSERT: &str =
@@ -1258,6 +1515,31 @@ pub struct LocalPlaylist {
     pub count: i64,
     /// The first track's stored `SongItem`, whose artwork stands in for a cover nobody picked.
     pub first_song: Option<String>,
+}
+
+/// Vocabulary status counts for language immersion
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VocabCounts {
+    pub known: usize,
+    pub learning: usize,
+    pub ignored: usize,
+}
+
+/// A mined flashcard for language learning
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FlashcardRow {
+    pub id: String,
+    pub word: String,
+    pub lemma: String,
+    pub sentence: String,
+    pub translation: String,
+    pub source_title: String,
+    pub source_url: String,
+    pub audio_url: Option<String>,
+    pub image_url: Option<String>,
+    pub anki_note_id: Option<i64>,
+    pub status: String,
+    pub created_at: i64,
 }
 
 #[cfg(test)]

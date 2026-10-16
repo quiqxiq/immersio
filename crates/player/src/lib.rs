@@ -212,7 +212,10 @@ fn new_mpv(cache_dir: &str) -> Result<Mpv, Error> {
     // fail the whole player, and the music must never depend on the picture.
     for (key, value) in [
         ("vo", "libmpv"),
-        ("hwdec", "auto-safe"),
+        ("profile", "fast"),
+        ("hwdec", "vaapi"),
+        ("hwdec-codecs", "h264"),
+        ("vd-lavc-fast", "yes"),
         ("video-timing-offset", "0"),
         ("osd-level", "0"),
         ("osd-bar", "no"),
@@ -428,6 +431,8 @@ impl Player {
         }
         self.apply_headers(headers)?;
         self.set_gain(gain_db)?;
+        // Reset any existing video playback on load so an old video frame never lingers
+        let _ = self.mpv().set_property("vid", "no");
         let args = loadfile_args(url, start, loadfile_has_index(self.mpv()));
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.mpv().command("loadfile", &refs)?;

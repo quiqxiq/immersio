@@ -76,6 +76,149 @@ pub struct PlayerResponse {
     pub video_details: Option<VideoDetails>,
     #[serde(default)]
     pub playback_tracking: Option<PlaybackTracking>,
+    #[serde(default)]
+    pub captions: Option<Captions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Captions {
+    #[serde(default)]
+    pub player_captions_tracklist_renderer: Option<PlayerCaptionsTracklistRenderer>,
+}
+
+impl Captions {
+    /// Pick the best caption track and its fetch URL, prioritizing English if multiple languages exist:
+    /// 1. Human-authored English (e.g. en, en-US, en-GB, manual)
+    /// 2. Auto-generated English (ASR en)
+    /// 3. English auto-translation (&tlang=en) if video has other subtitle languages and translation is enabled
+    /// 4. Fallback to first available track
+    pub fn best_caption(&self) -> Option<(String, String)> {
+        let tracks = &self.player_captions_tracklist_renderer.as_ref()?.caption_tracks;
+        if tracks.is_empty() {
+            return None;
+        }
+
+        // 1. Human English
+        if let Some(t) = tracks.iter().find(|t| t.is_english() && !t.is_asr()) {
+            let label = t.display_name().unwrap_or_else(|| "English".into());
+            return Some((t.base_url.clone(), label));
+        }
+
+        // 2. ASR / Auto-generated English
+        if let Some(t) = tracks.iter().find(|t| t.is_english()) {
+            let label = t.display_name().unwrap_or_else(|| "English (auto-generated)".into());
+            return Some((t.base_url.clone(), label));
+        }
+
+        // 3. Auto-translate to English if translatable
+        if let Some(t) = tracks.iter().find(|t| t.is_translatable.unwrap_or(false)) {
+            let orig_name = t.display_name().unwrap_or_else(|| "Auto".into());
+            return Some((format!("{}&tlang=en", t.base_url), format!("English (translated from {orig_name})")));
+        }
+
+        // 4. First track fallback
+        let first = tracks.first()?;
+        let label = first.display_name().unwrap_or_else(|| "Subtitles".into());
+        Some((first.base_url.clone(), label))
+    }
+
+    /// URL of the prioritized caption track (English first)
+    pub fn best_caption_url(&self) -> Option<String> {
+        self.best_caption().map(|(url, _)| url)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerCaptionsTracklistRenderer {
+    #[serde(default)]
+    pub caption_tracks: Vec<CaptionTrack>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionTrack {
+    pub base_url: String,
+    #[serde(default)]
+    pub name: Option<CaptionName>,
+    #[serde(default)]
+    pub vss_id: Option<String>,
+    #[serde(default)]
+    pub language_code: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub is_translatable: Option<bool>,
+}
+
+impl CaptionTrack {
+    pub fn is_english(&self) -> bool {
+        if let Some(ref l) = self.language_code {
+            if l.to_ascii_lowercase().starts_with("en") {
+                return true;
+            }
+        }
+        if let Some(ref v) = self.vss_id {
+            let v_low = v.to_ascii_lowercase();
+            if v_low.contains(".en") || v_low.contains("en-") || v_low == "en" {
+                return true;
+            }
+        }
+        if let Some(ref n) = self.name {
+            if let Some(ref s) = n.display_text() {
+                if s.to_ascii_lowercase().contains("english") {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn is_asr(&self) -> bool {
+        self.kind.as_deref() == Some("asr")
+            || self.vss_id.as_deref().is_some_and(|v| v.starts_with('a'))
+    }
+
+    pub fn display_name(&self) -> Option<String> {
+        self.name.as_ref().and_then(|n| n.display_text())
+            .or_else(|| self.language_code.clone())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionName {
+    #[serde(default)]
+    pub simple_text: Option<String>,
+    #[serde(default)]
+    pub runs: Option<Vec<CaptionRun>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaptionRun {
+    pub text: Option<String>,
+}
+
+impl CaptionName {
+    pub fn display_text(&self) -> Option<String> {
+        if let Some(ref s) = self.simple_text {
+            if !s.is_empty() {
+                return Some(s.clone());
+            }
+        }
+        if let Some(ref runs) = self.runs {
+            let combined = runs
+                .iter()
+                .filter_map(|r| r.text.as_deref())
+                .collect::<Vec<_>>()
+                .join("");
+            if !combined.is_empty() {
+                return Some(combined);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -271,14 +414,46 @@ pub fn find_format(data: &StreamingData, quality: AudioQuality) -> Option<&Forma
 /// MP4 because a stock Fedora only ships openh264 (constrained baseline) and YouTube's 720p/1080p
 /// MP4 is High profile, so itag 137 would fail for those users. context/03.
 pub fn find_video_format(data: &StreamingData, max_height: i32) -> Option<&Format> {
-    data.adaptive_formats
+    // 1. Prefer H.264 (avc1) for maximum hardware acceleration compatibility (e.g. VAAPI on AMD/Intel/Nvidia).
+    let h264 = data.adaptive_formats
+        .iter()
+        .filter(|f| {
+            !f.is_audio()
+                && (f.mime_type.contains("avc1") || f.mime_type.contains("h264"))
+                && f.height.is_some_and(|h| h <= max_height)
+        })
+        .max_by(|a, b| {
+            a.height
+                .cmp(&b.height)
+                .then(a.fps.unwrap_or(30).cmp(&b.fps.unwrap_or(30)))
+                .then(a.bitrate.cmp(&b.bitrate))
+        });
+    if h264.is_some() {
+        return h264;
+    }
+
+    // 2. Fallback to VP9
+    let vp9 = data.adaptive_formats
         .iter()
         .filter(|f| {
             !f.is_audio()
                 && f.mime_type.contains("vp9")
                 && f.height.is_some_and(|h| h <= max_height)
         })
-        // Biggest picture that fits, then the smoother of a 30/60fps pair, then the better encode.
+        .max_by(|a, b| {
+            a.height
+                .cmp(&b.height)
+                .then(a.fps.unwrap_or(30).cmp(&b.fps.unwrap_or(30)))
+                .then(a.bitrate.cmp(&b.bitrate))
+        });
+    if vp9.is_some() {
+        return vp9;
+    }
+
+    // 3. Fallback: any video format at or below max_height (e.g. AV1)
+    data.adaptive_formats
+        .iter()
+        .filter(|f| !f.is_audio() && f.height.is_some_and(|h| h <= max_height))
         .max_by(|a, b| {
             a.height
                 .cmp(&b.height)
@@ -415,7 +590,7 @@ mod tests {
         let sd = serde_json::from_str::<PlayerResponse>(json).unwrap().streaming_data.unwrap();
         assert_eq!(find_video_format(&sd, 720).unwrap().itag, 302); // 720p60 over the 720p24
         assert_eq!(find_video_format(&sd, 480).unwrap().itag, 244);
-        assert_eq!(find_video_format(&sd, 2160).unwrap().itag, 248); // never the AV1/H.264 1080p
+        assert_eq!(find_video_format(&sd, 2160).unwrap().itag, 137); // H.264 1080p
     }
 
     /// A real WEB_REMIX `/player` reply for an OMV (dQw4w9WgXcQ, 2026-09-30, signed in; trimmed to
@@ -431,20 +606,19 @@ mod tests {
         assert_eq!(r.video_details.as_ref().and_then(|v| v.is_music_video()), Some(true));
         let sd = r.streaming_data.unwrap();
         let v = find_video_format(&sd, 720).unwrap();
-        assert_eq!(v.itag, 247); // the 720p VP9, never the H.264 136 beside it
+        assert_eq!(v.itag, 136); // the 720p H.264
         assert!(v.direct_url().is_none() && v.cipher_string().is_some());
-        assert_eq!(find_video_format(&sd, 480).unwrap().itag, 244);
+        assert_eq!(find_video_format(&sd, 480).unwrap().itag, 135);
         assert!(find_format(&sd, AudioQuality::High).unwrap().is_audio());
     }
 
     /// Audio-only response (the ordinary case for a song): no video, so the view keeps the artwork.
     #[test]
-    fn find_video_format_none_without_vp9() {
+    fn find_video_format_none_without_video() {
         let json = r#"{
             "playabilityStatus": { "status": "OK" },
             "streamingData": { "adaptiveFormats": [
-                { "itag": 251, "url": "a", "mimeType": "audio/webm; codecs=\"opus\"", "bitrate": 141210 },
-                { "itag": 137, "url": "h264", "mimeType": "video/mp4; codecs=\"avc1.640028\"", "bitrate": 4000000, "width": 1920, "height": 1080, "fps": 30 }
+                { "itag": 251, "url": "a", "mimeType": "audio/webm; codecs=\"opus\"", "bitrate": 141210 }
             ] }
         }"#;
         let sd = serde_json::from_str::<PlayerResponse>(json).unwrap().streaming_data.unwrap();

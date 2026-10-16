@@ -1,11 +1,16 @@
 //! Limusic Tauri app. Wires transport + player + db + orchestrator behind the command boundary.
 
 mod appicon;
+mod anki;
+pub mod ai;
+mod articles;
+pub mod videos;
 mod audioproxy;
 mod blocked;
 mod cipher;
 mod commands;
 mod db;
+pub mod dict;
 mod diagnostics;
 mod discord;
 mod hotkeys;
@@ -265,7 +270,7 @@ fn init_logging(dir: &std::path::Path) {
 
     let filter = || {
         tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "info,app_lib=debug".into())
+            .unwrap_or_else(|_| "info,app_lib=debug,player=debug".into())
     };
     let path = dir.join("limusic.log");
     let _ = std::fs::rename(&path, dir.join("limusic.log.1"));
@@ -914,11 +919,38 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(only_ui(tauri::generate_handler![
+            commands::get_articles_feed,
+            commands::extract_article,
+            commands::get_word_statuses,
+            commands::set_word_status,
+            commands::bulk_set_known,
+            commands::get_vocab_counts,
+            commands::save_flashcard,
+            commands::get_flashcards,
+            commands::anki_status,
+            commands::anki_get_decks,
+            commands::anki_get_models,
+            commands::anki_mine_card,
+            commands::anki_sync_intervals,
+            commands::lookup_word,
+            commands::clear_dict_cache,
+            commands::get_dict_cache_count,
+            commands::ai_explain_word,
+            commands::get_openrouter_token,
+            commands::set_openrouter_token,
+            commands::clear_ai_cache,
+            commands::get_ai_cache_count,
+            commands::test_openrouter_token,
             commands::search,
             commands::search_all,
             commands::search_suggestions,
             commands::search_cards,
             commands::search_videos,
+            commands::get_youtube_subscriptions,
+            commands::get_subscribed_channels,
+            commands::get_channel_videos,
+            commands::get_youtube_recommendations,
+            commands::get_trending_videos,
             commands::song,
             commands::play,
             commands::play_index,

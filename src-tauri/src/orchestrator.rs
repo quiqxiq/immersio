@@ -577,9 +577,16 @@ impl Orchestrator {
         max_height: i32,
         disabled: &HashSet<String>,
     ) -> Option<String> {
+        let has_kept = self.video_replies.lock().is_ok_and(|m| m.contains_key(video_id));
         let failed =
             self.video_failed.lock().is_ok_and(|m| blacklist_blocks(&m, video_id, Instant::now()));
-        let order = if failed { ["VISIONOS", MAIN_CLIENT] } else { [MAIN_CLIENT, "VISIONOS"] };
+        // If we already have the cached reply from WEB_REMIX, reuse it. Otherwise, prioritize
+        // direct video (VISIONOS) to avoid 20-30s player.js deciphering stalls on non-music YouTube videos.
+        let order = if has_kept && !failed {
+            [MAIN_CLIENT, "VISIONOS"]
+        } else {
+            ["VISIONOS", MAIN_CLIENT]
+        };
         for key in order {
             // The "stream clients" setting covers this path too. It used to be read only by
             // `resolve`, so a user who turned a client off still got it here, which is both a

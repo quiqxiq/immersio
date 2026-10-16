@@ -56,7 +56,7 @@ export const np = $state({ open: false, tab: 'queue' as 'queue' | 'lyrics' | 'co
  * without a reload.
  */
 export const prefs = $state({
-	musicVideos: false,
+	musicVideos: true,
 	/** `discord_rpc`. Two places toggle it (the titlebar button and the Discord settings tab) and
 	 *  each drew its own indicator, so turning it off in one left the other stale. One owner. */
 	discordRpc: false,
@@ -1180,7 +1180,7 @@ export const ui = $state({
 	share: null as BrowseItem | null, // the share modal's target
 	toast: null as Toast | null,
 	settingsOpen: false, // the settings modal
-	settingsFocus: null as 'lyrics' | 'scrobbling' | null, // a section to open settings on, once
+	settingsFocus: null as 'lyrics' | 'scrobbling' | 'immersion' | null, // a section to open settings on, once
 	scrobbleTrack: null as SongItem | null, // "Edit scrobble" from a track menu: the track to edit
 	ltOpen: false, // the Listen Together modal
 	linkOpen: false, // the "open a pasted link" modal
@@ -1612,7 +1612,7 @@ export function initApp(mini = false): () => void {
 	if (mini) return teardown;
 	api.getSettings()
 		.then((s) => {
-			prefs.musicVideos = s.music_videos === 'true';
+			prefs.musicVideos = s.music_videos !== 'false';
 			prefs.nativeVideo = s.native_video === 'true';
 			prefs.ambient = s.ambient_light === 'true';
 			prefs.discordRpc = s.discord_rpc === 'true';

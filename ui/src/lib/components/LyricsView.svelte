@@ -37,6 +37,10 @@
 	import { playback } from '$lib/player.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import LyricsSourcePicker from './LyricsSourcePicker.svelte';
+	import WordPopup from '$lib/components/WordPopup.svelte';
+	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
+	import { vocab } from '$lib/vocab.svelte';
+	import { cleanWordToken } from '$lib/lemma';
 
 	// `expanded` only sizes the type and centres the column. The owner of the extra room (the side
 	// panel, or the now-playing view) decides how much there is. Toggling it must not remount this
@@ -57,6 +61,33 @@
 	let lyrics = $state<api.Lyrics | null>(null);
 	let loading = $state(true);
 	let scroller: HTMLElement | undefined = $state();
+
+	let selectedWord = $state<string | null>(null);
+	let selectedSentence = $state<string | null>(null);
+	let selectedAnchorRect = $state<DOMRect | null>(null);
+
+	// AI Immersion Tutor lookup state
+	let selectedAiWord = $state<string | null>(null);
+	let selectedAiSentence = $state<string | null>(null);
+	let selectedAiAnchorRect = $state<DOMRect | null>(null);
+
+	function handleWordClick(word: string, fullSentence: string, e: MouseEvent) {
+		e.stopPropagation();
+		const clean = cleanWordToken(word);
+		if (!clean) return;
+		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+		if (e.ctrlKey || e.metaKey) {
+			selectedWord = null;
+			selectedAiWord = clean;
+			selectedAiSentence = fullSentence;
+			selectedAiAnchorRect = rect;
+			return;
+		}
+		selectedAiWord = null;
+		selectedWord = clean;
+		selectedSentence = fullSentence;
+		selectedAnchorRect = rect;
+	}
 
 	const canRomanize = $derived(!!lyrics?.lines.some((l) => l.romanized));
 	const showRomanized = $derived(canRomanize && prefs.romanized);
@@ -273,9 +304,24 @@
 							: 'text-muted-foreground opacity-70'}"
 				>
 					{#if line.words && line.words.length > 0}
-						{@render sweep(line.words, isActive)}
+						{@render sweep(line.words, isActive, line.text)}
+					{:else if line.text}
+						<span>
+							{#each line.text.split(' ') as word}
+								{@const clean = word.replace(/^[^\w]+|[^\w]+$/g, '').toLowerCase()}
+								<!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
+								<span
+									role="button"
+									tabindex="0"
+									onclick={(e) => handleWordClick(word, line.text, e)}
+									class="inline-block px-0.5 {vocab.getWordClass(clean)}"
+								>
+									{word}{' '}
+								</span>
+							{/each}
+						</span>
 					{:else}
-						<span>{line.text || '♪'}</span>
+						<span>♪</span>
 					{/if}
 
 					{#if showRomanized && line.romanized}
@@ -283,7 +329,7 @@
 						     Apple's reading is timed to the same syllables and sweeps with the line. -->
 						<span class="mt-0.5 block text-[length:max(0.62em,11px)] font-semibold">
 							{#if line.romanized_words && line.romanized_words.length > 0}
-								{@render sweep(line.romanized_words, isActive)}
+								{@render sweep(line.romanized_words, isActive, line.romanized)}
 							{:else}
 								{line.romanized}
 							{/if}
@@ -309,7 +355,20 @@
 			{#each lyrics.lines as line, i (i)}
 				{#if line.text}
 					<div>
-						<p>{line.text}</p>
+						<p>
+							{#each line.text.split(' ') as word}
+								{@const clean = word.replace(/^[^\w]+|[^\w]+$/g, '').toLowerCase()}
+								<!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
+								<span
+									role="button"
+									tabindex="0"
+									onclick={(e) => handleWordClick(word, line.text, e)}
+									class="inline-block px-0.5 {vocab.getWordClass(clean)}"
+								>
+									{word}{' '}
+								</span>
+							{/each}
+						</p>
 						{#if showRomanized && line.romanized}
 							<p class="text-[0.85em] text-muted-foreground">{line.romanized}</p>
 						{/if}
@@ -383,11 +442,13 @@
 
 <!-- Word-by-word karaoke sweep (Better Lyrics style), for the line and for Apple's timed
      romanization under it. -->
-{#snippet sweep(words: api.LyricWord[], active: boolean)}
+{#snippet sweep(words: api.LyricWord[], active: boolean, lineText: string = '')}
 	<span class="inline-flex flex-wrap items-baseline">
 		{#each words as word, wIdx (wIdx)}
 			{@const isWordEnd = word.text.endsWith(' ')}
 			{@const cleanText = word.text.trimEnd()}
+			{@const cleanWord = cleanWordToken(cleanText)}
+			{@const st = vocab.getStatus(cleanWord)}
 			{#if active}
 				{@const progress = getWordProgress(word, posMs)}
 				{@const pct = Math.round(Math.min(1, Math.max(0, progress)) * 100)}
@@ -396,21 +457,60 @@
 				     live in the class and aren't re-serialised 60 times a second. Both
 				     colours are theme tokens: the sung half was hardcoded white, which is
 				     invisible on every light theme. -->
+				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
 				<span
-					class="inline-block bg-clip-text text-transparent [-webkit-text-fill-color:transparent] transition-transform duration-100 ease-out {isWordEnd
+					role="button"
+					tabindex="0"
+					onclick={(e) => handleWordClick(cleanText, lineText, e)}
+					class="inline-block bg-clip-text text-transparent [-webkit-text-fill-color:transparent] transition-transform duration-100 ease-out hover:underline cursor-pointer {isWordEnd
 						? 'mr-[0.26em]'
-						: ''} {isCurrentWord ? 'scale-[1.03]' : ''}"
+						: ''} {isCurrentWord ? 'scale-[1.03]' : ''} {st === 'learning' ? 'font-extrabold' : ''}"
 					style="background-image: linear-gradient(90deg, var(--foreground) {pct}%, var(--muted-foreground) {pct}%)"
 				>
 					{cleanText}
 				</span>
 			{:else}
 				<!-- Colour and dimming both come from the line. -->
-				<span class="inline-block {isWordEnd ? 'mr-[0.26em]' : ''}">
+				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
+				<span
+					role="button"
+					tabindex="0"
+					onclick={(e) => handleWordClick(cleanText, lineText, e)}
+					class="inline-block transition-colors hover:underline hover:text-foreground cursor-pointer {isWordEnd ? 'mr-[0.26em]' : ''} {vocab.getWordClass(cleanText)}"
+				>
 					{cleanText}
 				</span>
 			{/if}
 		{/each}
 	</span>
 {/snippet}
+
+<!-- Universal Immersion Word Popup for Music Lyrics -->
+{#if selectedWord}
+	<WordPopup
+		word={selectedWord}
+		sentence={selectedSentence || ''}
+		sourceTitle={playback.now?.title || 'Lirik Musik'}
+		sourceUrl={playback.now?.videoId ? `https://music.youtube.com/watch?v=${playback.now.videoId}` : ''}
+		anchorRect={selectedAnchorRect}
+		onclose={() => (selectedWord = null)}
+		onopenAi={() => {
+			selectedAiWord = selectedWord;
+			selectedAiSentence = selectedSentence;
+			selectedAiAnchorRect = selectedAnchorRect;
+		}}
+	/>
+{/if}
+
+<!-- AI Immersion Tutor Popup (Ctrl + Click) -->
+{#if selectedAiWord}
+	<AiWordPopup
+		word={selectedAiWord}
+		sentence={selectedAiSentence || ''}
+		sourceTitle={playback.now?.title || 'Lirik Musik'}
+		sourceUrl={playback.now?.videoId ? `https://music.youtube.com/watch?v=${playback.now.videoId}` : ''}
+		anchorRect={selectedAiAnchorRect}
+		onclose={() => (selectedAiWord = null)}
+	/>
+{/if}
 

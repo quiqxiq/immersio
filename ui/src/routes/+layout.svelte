@@ -42,11 +42,14 @@
 	import ListenTogether from '$lib/components/ListenTogether.svelte';
 	import LinkDialog from '$lib/components/LinkDialog.svelte';
 	import ImportDialog from '$lib/components/ImportDialog.svelte';
+	import VocabOnboardingModal from '$lib/components/VocabOnboardingModal.svelte';
 	import { handleImportDrop, initImport } from '$lib/import.svelte';
 	import MiniPlayer from '$lib/components/MiniPlayer.svelte';
 	import NowPlaying from '$lib/components/NowPlaying.svelte';
+	import VideoPlayerView from '$lib/components/VideoPlayerView.svelte';
 	import TheaterMode from '$lib/components/TheaterMode.svelte';
 	import VideoSurface from '$lib/components/VideoSurface.svelte';
+	import { vocab } from '$lib/vocab.svelte';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
 	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -150,6 +153,7 @@
 	let queueOpen = $state(false);
 	let lyricsOpen = $state(false);
 	let commentsOpen = $state(false);
+	let showVocabOnboarding = $state(false);
 	// Two ways the now-playing view and these panels can divide the same two buttons, picked in
 	// settings (#62). Tabbed (the default): the view carries queue and lyrics itself, so the panels
 	// step aside for it and the bar's buttons switch its tabs. Off: these are the only owner, the
@@ -228,6 +232,12 @@
 		const teardownZoom = initZoom();
 		const teardownShortcuts = initShortcuts();
 		initImport();
+		vocab.init();
+		if (browser && !localStorage.getItem('limusic_vocab_calibrated')) {
+			setTimeout(() => {
+				showVocabOnboarding = true;
+			}, 700);
+		}
 		return () => {
 			clearInterval(updateTimer);
 			teardownApp();
@@ -310,10 +320,16 @@
 			     parking container until the view borrows the picture. Not on Linux, where mpv draws the
 			     picture itself (prefs.nativeVideo). -->
 			{#if !prefs.nativeVideo}<VideoSurface />{/if}
-			{#if np.open && playback.now}<NowPlaying
-					queueOpen={showQueue}
-					lyricsOpen={showLyrics || showComments}
-				/>{/if}
+			{#if np.open && playback.now}
+				{#if playback.now.isVideo}
+					<VideoPlayerView />
+				{:else}
+					<NowPlaying
+						queueOpen={showQueue}
+						lyricsOpen={showLyrics || showComments}
+					/>
+				{/if}
+			{/if}
 			<!-- Lyrics before queue: side by side over the page, lyrics on the left, queue on the right. -->
 			{#if showLyrics}<LyricsPanel onClose={() => (lyricsOpen = false)} queueOpen={showQueue} />{/if}
 			{#if showComments}<CommentsPanel
@@ -367,6 +383,7 @@
 	<ListenTogether />
 	<LinkDialog />
 	<ImportDialog />
+	<VocabOnboardingModal bind:open={showVocabOnboarding} />
 
 	<!-- The two notification banners below run at z-[100]. Dialogs and menus sit at z-50 and portal to
 	     <body>, so a z-50 banner loses the tie on DOM order and hides behind an open modal. The update

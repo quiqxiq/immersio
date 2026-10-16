@@ -280,7 +280,7 @@ async fn ask(
         "boidu" => boidu_get(req).await.map_err(e),
         "lyricsplus" => lyricsplus_get(req).await.map_err(e),
         "lrclib" => lrclib(req).await.map_err(e),
-        "youtube" => youtube_get(state, next).await,
+        "youtube" => youtube_get(state, req, next).await,
         "simpmusic" => simpmusic_get(req).await.map_err(e),
         "netease" => netease_get(req).await.map_err(e),
         "qq" => qqmusic_get(req).await.map_err(e),
@@ -327,40 +327,179 @@ async fn fetch(state: &AppState, mut req: LyricsRequest) -> (Option<Lyrics>, boo
 }
 
 /// YouTube Music's own lyrics: the timed ones its mobile app shows, else the plain text under
-/// YouTube's attribution ("Source: Musixmatch"). Region-licensed, so often absent.
-async fn youtube_get(
-    state: &AppState,
-    next: &Result<Option<NextResult>, String>,
-) -> Result<Option<Lyrics>, String> {
-    // A next() answer with no lyrics tab IS "YouTube has no lyrics".
-    let bid = match next {
-        Ok(n) => n.as_ref().and_then(|n| n.lyrics_browse_id.clone()),
-        Err(e) => return Err(e.clone()),
-    };
-    let Some(bid) = bid else { return Ok(None) };
-    if let Some(client) = state.clients.get(innertube::LYRICS_TIMED_CLIENT) {
-        match state.it.lyrics_timed(client, &bid).await {
-            Ok(lines) if !lines.is_empty() => {
-                return Ok(Some(Lyrics {
-                    source: "YouTube Music".into(),
-                    synced: true,
-                    lines: lines
-                        .into_iter()
-                        .map(|l| LyricLine::simple(Some(l.time_ms), l.text))
-                        .collect(),
-                    ..Default::default()
-                }));
+#[derive(Debug, Deserialize)]
+struct CaptionEvents {
+    #[serde(default)]
+    events: Vec<CaptionEvent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CaptionEvent {
+    #[serde(default, rename = "tStartMs")]
+    start_ms: Option<u64>,
+    #[serde(default)]
+    segs: Vec<CaptionSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CaptionSegment {
+    #[serde(default)]
+    utf8: Option<String>,
+}
+
+/// Fallback parser for YouTube's `srv3` XML subtitle format (`<p t="123" d="456">...</p>`).
+fn parse_xml_timedtext(xml: &str) -> Vec<LyricLine> {
+    let mut lines = Vec::new();
+    static RE_P: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_p = RE_P.get_or_init(|| regex::Regex::new(r#"<p\s+[^>]*t="(\d+)"[^>]*>(.*?)</p>"#).unwrap());
+    static RE_TAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_tags = RE_TAGS.get_or_init(|| regex::Regex::new(r#"<[^>]+>"#).unwrap());
+
+    for cap in re_p.captures_iter(xml) {
+        if let (Some(t_match), Some(txt_match)) = (cap.get(1), cap.get(2)) {
+            if let Ok(ms) = t_match.as_str().parse::<u64>() {
+                let stripped = re_tags.replace_all(txt_match.as_str(), "");
+                let unescaped = stripped
+                    .replace("&amp;", "&")
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&apos;", "'")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">");
+                let text = unescaped.trim();
+                if !text.is_empty() && text != "\n" {
+                    lines.push(LyricLine::simple(Some(ms), text.to_string()));
+                }
             }
-            Ok(_) => {}
-            Err(e) => tracing::debug!(error = %e, "lyrics: timed browse failed"),
         }
     }
-    let client = state.clients.get(innertube::METADATA_CLIENT).ok_or("no metadata client")?;
-    let plain = state.it.lyrics_plain(client, &bid).await.map_err(|e| e.to_string())?;
-    Ok(plain.and_then(|p| {
-        let source = p.footer.unwrap_or_else(|| "YouTube Music".into());
-        plain_from_text(Some(&p.text), &source)
-    }))
+    lines
+}
+
+/// YouTube Music's own lyrics, or YouTube Closed Captions (subtitles).
+async fn youtube_get(
+    state: &AppState,
+    req: &LyricsRequest,
+    next: &Result<Option<NextResult>, String>,
+) -> Result<Option<Lyrics>, String> {
+    // 1. Try timed lyrics from YouTube Music browse endpoint if present
+    if let Ok(Some(n)) = next {
+        if let Some(bid) = &n.lyrics_browse_id {
+            if let Some(client) = state.clients.get(innertube::LYRICS_TIMED_CLIENT) {
+                if let Ok(lines) = state.it.lyrics_timed(client, bid).await {
+                    if !lines.is_empty() {
+                        return Ok(Some(Lyrics {
+                            source: "YouTube Music".into(),
+                            synced: true,
+                            lines: lines
+                                .into_iter()
+                                .map(|l| LyricLine::simple(Some(l.time_ms), l.text))
+                                .collect(),
+                            ..Default::default()
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Next, check Closed Captions (subtitles) from YouTube player endpoint.
+    // Try ANDROID_VR first (which reliably returns full captions for YouTube videos),
+    // and fallback to WEB_REMIX, VISIONOS, and TVHTML5_SIMPLY.
+    let caption_clients = [
+        "ANDROID_VR_1_65_10",
+        "ANDROID_VR_1_43_32",
+        innertube::MAIN_CLIENT,
+        "VISIONOS",
+        "TVHTML5_SIMPLY",
+    ];
+    for client_key in caption_clients {
+        if let Some(client) = state.clients.get(client_key) {
+            if let Ok(resp) = state.it.player(client, &req.video_id, None, None, None).await {
+                if let Some(captions) = &resp.captions {
+                    if let Some((caption_url, label)) = captions.best_caption() {
+                        // Clean existing fmt parameter and request fmt=json3
+                        let json_url = if caption_url.contains("fmt=") {
+                            let mut clean = String::new();
+                            for (i, p) in caption_url.split('&').enumerate() {
+                                if p.starts_with("fmt=") {
+                                    continue;
+                                }
+                                if i > 0 && !clean.is_empty() {
+                                    clean.push('&');
+                                }
+                                clean.push_str(p);
+                            }
+                            format!("{clean}&fmt=json3")
+                        } else {
+                            format!("{caption_url}&fmt=json3")
+                        };
+
+                        let http = reqwest::Client::builder()
+                            .user_agent(&client.user_agent)
+                            .timeout(Duration::from_secs(10))
+                            .build()
+                            .unwrap_or_else(|_| crate::http::client().clone());
+
+                        if let Ok(r) = http.get(&json_url).send().await {
+                            if let Ok(body_text) = r.text().await {
+                                // Try parsing as json3 first
+                                if let Ok(events) = serde_json::from_str::<CaptionEvents>(&body_text) {
+                                    let mut lines = Vec::new();
+                                    for ev in events.events {
+                                        let text = ev.segs.into_iter().filter_map(|s| s.utf8).collect::<String>();
+                                        let text = text.trim();
+                                        if !text.is_empty() && text != "\n" {
+                                            lines.push(LyricLine::simple(ev.start_ms, text.to_owned()));
+                                        }
+                                    }
+                                    if !lines.is_empty() {
+                                        return Ok(Some(Lyrics {
+                                            source: format!("YouTube Subtitles ({label})"),
+                                            synced: true,
+                                            lines,
+                                            ..Default::default()
+                                        }));
+                                    }
+                                }
+
+                                // Fallback: try parsing as srv3/xml if json3 failed or returned XML
+                                if body_text.contains("<timedtext") || body_text.contains("<p ") {
+                                    let lines = parse_xml_timedtext(&body_text);
+                                    if !lines.is_empty() {
+                                        return Ok(Some(Lyrics {
+                                            source: format!("YouTube Subtitles ({label})"),
+                                            synced: true,
+                                            lines,
+                                            ..Default::default()
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback to plain text under YouTube's attribution
+    let bid = match next {
+        Ok(n) => n.as_ref().and_then(|n| n.lyrics_browse_id.clone()),
+        Err(_) => None,
+    };
+    if let Some(bid) = bid {
+        if let Some(client) = state.clients.get(innertube::METADATA_CLIENT) {
+            if let Ok(plain) = state.it.lyrics_plain(client, &bid).await {
+                if let Some(p) = plain {
+                    let source = p.footer.unwrap_or_else(|| "YouTube Music".into());
+                    return Ok(plain_from_text(Some(&p.text), &source));
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 // --- LRCLIB (https://lrclib.net/docs) -------------------------------------------------------

@@ -17,7 +17,9 @@
 		ComputerIcon,
 		SquareArrowLeft01Icon,
 		SquareArrowRight01Icon,
-		SpotifyIcon
+		SpotifyIcon,
+		Video01Icon,
+		News01Icon
 	} from '@hugeicons/core-free-icons';
 	import { toggleMode } from 'mode-watcher';
 	import { Button } from '$lib/components/ui/button';
@@ -31,6 +33,8 @@
 
 	const nav = $derived([
 		{ href: '/', label: t('nav.home'), icon: Home01Icon },
+		{ href: '/videos', label: 'Videos', icon: Video01Icon },
+		{ href: '/articles', label: 'Artikel', icon: News01Icon },
 		{ href: '/search', label: t('nav.search'), icon: Search01Icon },
 		{ href: '/library', label: t('nav.library'), icon: LibraryIcon }
 	]);

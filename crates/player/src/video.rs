@@ -165,7 +165,15 @@ pub(crate) fn apply_vid(decks: &Decks) {
             if embedded {
                 let _ = m.set_property("force-window", if show { "yes" } else { "no" });
             }
-            let _ = m.set_property("vid", if show { "auto" } else { "no" });
+            if show {
+                if let Some(id) = newest_video_track(m) {
+                    let _ = m.set_property("vid", id);
+                } else {
+                    let _ = m.set_property("vid", "auto");
+                }
+            } else {
+                let _ = m.set_property("vid", "no");
+            }
         }
     }
 }
@@ -397,6 +405,9 @@ impl VideoRenderer {
     /// Draw the playing deck's current frame into `fbo` (`width` x `height` pixels). On the GL
     /// thread, with its context current.
     pub fn render(&mut self, fbo: i32, width: i32, height: i32) -> Result<(), Error> {
+        if width <= 0 || height <= 0 {
+            return Ok(());
+        }
         self.ensure_contexts()?;
         let deck = self.decks.active.load(Ordering::SeqCst);
         if let Some(ctx) = &self.ctx[deck] {

@@ -17,7 +17,8 @@
 		Globe02Icon,
 		ArrowDown01Icon,
 		Alert02Icon,
-		LinkSquare02Icon
+		LinkSquare02Icon,
+		BookOpenTextIcon
 	} from '@hugeicons/core-free-icons';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -36,6 +37,7 @@
 	import Changelog from '$lib/components/Changelog.svelte';
 	import DiscordSettings from '$lib/components/DiscordSettings.svelte';
 	import ScrobbleSettings from '$lib/components/ScrobbleSettings.svelte';
+	import ImmersionSettings from '$lib/components/ImmersionSettings.svelte';
 	import {
 		updateState,
 		availableMessage,
@@ -54,6 +56,7 @@
 		| 'general'
 		| 'themes'
 		| 'playback'
+		| 'immersion'
 		| 'hotkeys'
 		| 'discord'
 		| 'scrobbling'
@@ -63,6 +66,7 @@
 		{ id: 'general', label: t('settings.tabs.general'), hint: t('settings.tabs.general_hint'), icon: Settings02Icon },
 		{ id: 'themes', label: t('settings.tabs.themes'), hint: t('settings.tabs.themes_hint'), icon: PaintBoardIcon },
 		{ id: 'playback', label: t('settings.tabs.playback'), hint: t('settings.tabs.playback_hint'), icon: PlayCircleIcon },
+		{ id: 'immersion', label: 'Immersion & Anki', hint: 'Kamus, Flashcard Anki, & Kata yang Dikuasai', icon: BookOpenTextIcon },
 		{ id: 'hotkeys', label: t('settings.tabs.hotkeys'), hint: t('settings.tabs.hotkeys_hint'), icon: KeyboardIcon },
 		{ id: 'discord', label: t('settings.tabs.discord'), hint: t('settings.tabs.discord_hint'), icon: DiscordIcon },
 		{ id: 'scrobbling', label: t('settings.tabs.scrobbling'), hint: t('settings.tabs.scrobbling_hint'), icon: LastFmIcon },
@@ -122,6 +126,10 @@
 			// once the tab has rendered. The Last.fm menu and "Edit scrobble" open a whole tab.
 			if (ui.settingsFocus === 'scrobbling') {
 				tab = 'scrobbling';
+				ui.settingsFocus = null;
+				load();
+			} else if (ui.settingsFocus === 'immersion') {
+				tab = 'immersion';
 				ui.settingsFocus = null;
 				load();
 			} else if (ui.settingsFocus) {
@@ -467,7 +475,7 @@
 	     transitioning the width relayouts the whole modal every frame, and WebKitGTK is the webview
 	     that would pay for it. -->
 	<Dialog.Content
-		class="gap-0 overflow-hidden p-0 {tab === 'discord' || tab === 'scrobbling' || tab === 'themes' ? 'sm:max-w-5xl' : tab === 'hotkeys' ? 'sm:max-w-4xl' : 'sm:max-w-3xl'}"
+		class="gap-0 overflow-hidden p-0 {tab === 'discord' || tab === 'scrobbling' || tab === 'themes' || tab === 'immersion' ? 'sm:max-w-5xl' : tab === 'hotkeys' ? 'sm:max-w-4xl' : 'sm:max-w-3xl'}"
 	>
 		<Dialog.Description class="sr-only">{t('settings.title')}</Dialog.Description>
 
@@ -716,6 +724,8 @@
 						</section>
 					{:else if tab === 'hotkeys'}
 						<GlobalHotkeysSettings />
+					{:else if tab === 'immersion'}
+						<ImmersionSettings />
 					{:else if tab === 'data'}
 						<section class={GROUP}>
 							<h3 class={LABEL}>{t('settings.sections.network')}</h3>

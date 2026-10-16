@@ -1,19 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "limusic",
+  "productName": "Immersio",
   "version": "1.3.0-rc.5",
   "identifier": "com.limusic.desktop",
   "build": {
     "frontendDist": "../ui/build",
     "devUrl": "http://localhost:5183",
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "beforeDevCommand": "test -d ui && pnpm --dir ui dev || pnpm --dir ../ui dev",
+    "beforeBuildCommand": "test -d ui && pnpm --dir ui build || pnpm --dir ../ui build"
   },
   "app": {
     "windows": [
       {
         "create": false,
-        "title": "Limusic",
+        "title": "Immersio",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

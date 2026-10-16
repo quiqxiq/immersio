@@ -77,6 +77,9 @@ zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
 csv = "1"
 strsim = "0.11"
 unicode-normalization = "0.1"
+feed-rs = "3.0.0"
+readability = "0.3.0"
+url = "2"
 
 [dev-dependencies]
 # Mock runtime for the IPC guard test (lib.rs `only_ui`).

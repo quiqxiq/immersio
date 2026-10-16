@@ -1255,3 +1255,216 @@ export const onLtState = (cb: (s: LtState) => void): Promise<UnlistenFn> =>
 	listen<LtState>('lt-state', (e) => cb(e.payload));
 export const onLtNotice = (cb: (msg: string) => void): Promise<UnlistenFn> =>
 	listen<string>('lt-notice', (e) => cb(e.payload));
+
+export interface ArticleCard {
+	id: string;
+	title: string;
+	summary: string;
+	link: string;
+	published?: string;
+	source: string;
+	category: string;
+	image_url?: string;
+}
+
+export interface ArticleContent {
+	url: string;
+	title: string;
+	byline?: string;
+	source: string;
+	published?: string;
+	hero_image?: string;
+	html: string;
+	text_length: number;
+}
+
+export const getArticlesFeed = (source?: string) =>
+	invoke<ArticleCard[]>('get_articles_feed', { source });
+
+export const extractArticle = (url: string) =>
+	invoke<ArticleContent>('extract_article', { url });
+
+// --- Language Immersion: Vocabulary & AnkiConnect ----------------------------
+
+export interface VocabCounts {
+	known: number;
+	learning: number;
+	ignored: number;
+	flashcards: number;
+}
+
+export interface FlashcardRow {
+	id: string;
+	word: string;
+	lemma: string;
+	sentence: string;
+	translation: string;
+	source_title: string;
+	source_url: string;
+	audio_url?: string | null;
+	image_url?: string | null;
+	anki_note_id?: number | null;
+	status: string;
+	created_at: number;
+}
+
+export interface AnkiStatus {
+	connected: boolean;
+	version?: number | null;
+	port: number;
+	error?: string | null;
+}
+
+export interface MineCardRequest {
+	word: string;
+	lemma: string;
+	sentence: string;
+	translation: string;
+	source_title: string;
+	source_url: string;
+	deck_name?: string | null;
+	model_name?: string | null;
+	audio_url?: string | null;
+	image_url?: string | null;
+}
+
+export interface MineCardResponse {
+	success: boolean;
+	anki_note_id?: number | null;
+	message: string;
+}
+
+export const getWordStatuses = (language?: string) =>
+	invoke<Record<string, string>>('get_word_statuses', { language });
+
+export const setWordStatus = (lemma: string, status: string, language?: string) =>
+	invoke<void>('set_word_status', { lemma, status, language });
+
+export const bulkSetKnown = (lemmas: string[], language?: string) =>
+	invoke<number>('bulk_set_known', { lemmas, language });
+
+export const getVocabCounts = (language?: string) =>
+	invoke<VocabCounts>('get_vocab_counts', { language });
+
+export const saveFlashcard = (card: FlashcardRow) =>
+	invoke<void>('save_flashcard', { card });
+
+export const getFlashcards = (limit?: number) =>
+	invoke<FlashcardRow[]>('get_flashcards', { limit });
+
+export const ankiStatus = (port?: number) =>
+	invoke<AnkiStatus>('anki_status', { port });
+
+export const ankiGetDecks = (port?: number) =>
+	invoke<string[]>('anki_get_decks', { port });
+
+export const ankiGetModels = (port?: number) =>
+	invoke<string[]>('anki_get_models', { port });
+
+export const ankiMineCard = (req: MineCardRequest, port?: number) =>
+	invoke<MineCardResponse>('anki_mine_card', { req, port });
+
+export const ankiSyncIntervals = (language?: string, port?: number) =>
+	invoke<number>('anki_sync_intervals', { language, port });
+
+export interface DictSense {
+	pos: string;
+	definition: string;
+	examples: string[];
+}
+
+export interface DictLookupResponse {
+	word: string;
+	phonetic?: string | null;
+	audio_url?: string | null;
+	senses: DictSense[];
+	word_translation?: string | null;
+	sentence_translation?: string | null;
+	provider: string;
+	from_cache: boolean;
+}
+
+export const lookupWord = (
+	word: string,
+	sentence?: string,
+	dictProvider?: string,
+	transProvider?: string,
+	targetLang?: string,
+	autoFallback?: boolean
+) =>
+	invoke<DictLookupResponse>('lookup_word', {
+		word,
+		sentence,
+		dictProvider,
+		transProvider,
+		targetLang,
+		autoFallback,
+	});
+
+export const clearDictCache = () =>
+	invoke<number>('clear_dict_cache');
+
+export const getDictCacheCount = () =>
+	invoke<number>('get_dict_cache_count');
+
+export interface AiExplainResponse {
+	content: string;
+	model_used: string;
+	from_cache: boolean;
+}
+
+export const aiExplainWord = (
+	word: string,
+	sentence: string,
+	category: string,
+	systemPrompt: string,
+	userPrompt: string
+) =>
+	invoke<AiExplainResponse>('ai_explain_word', {
+		word,
+		sentence,
+		category,
+		systemPrompt,
+		userPrompt
+	});
+
+export const getOpenRouterToken = () =>
+	invoke<string | null>('get_openrouter_token');
+
+export const setOpenRouterToken = (token: string) =>
+	invoke<void>('set_openrouter_token', { token });
+
+export const clearAiCache = () =>
+	invoke<number>('clear_ai_cache');
+
+export const getAiCacheCount = () =>
+	invoke<number>('get_ai_cache_count');
+
+export const testOpenRouterToken = (token: string) =>
+	invoke<string>('test_openrouter_token', { token });
+
+export interface SubscribedChannel {
+	id: string;
+	title: string;
+	subscriber_count: string;
+	video_count?: string | null;
+	avatar_url: string;
+	description?: string | null;
+}
+
+export const getYoutubeSubscriptions = () =>
+	invoke<SongItem[]>('get_youtube_subscriptions');
+
+export const getSubscribedChannels = () =>
+	invoke<SubscribedChannel[]>('get_subscribed_channels');
+
+export const getChannelVideos = (channelId: string) =>
+	invoke<SongItem[]>('get_channel_videos', { channelId });
+
+export const getYoutubeRecommendations = () =>
+	invoke<SongItem[]>('get_youtube_recommendations');
+
+export const getTrendingVideos = (category: string) =>
+	invoke<SongItem[]>('get_trending_videos', { category });
+
+

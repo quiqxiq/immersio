@@ -521,7 +521,7 @@ impl AppState {
         if !is_video
             || !native_video()
             || crate::local::is_local_song(video_id)
-            || self.db.get_setting("music_videos").as_deref() != Some("true")
+            || self.db.get_setting("music_videos").as_deref() == Some("false")
         {
             return;
         }
@@ -4427,7 +4427,7 @@ pub(crate) fn swap_version(item: &mut SongItem) -> bool {
 
 /// Whether a row YouTube pairs with its other version should play the music video (#464).
 pub(crate) fn wants_video(db: &Db) -> bool {
-    db.get_setting("music_videos").as_deref() == Some("true")
+    db.get_setting("music_videos").as_deref() != Some("false")
         && db.get_setting("videos_first").as_deref() != Some("false")
 }
 

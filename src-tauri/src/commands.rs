@@ -38,9 +38,279 @@ pub async fn search(
 #[tauri::command]
 pub async fn search_videos(state: St<'_>, query: String) -> Result<Vec<SongItem>, String> {
     let client = metadata_client(&state)?;
-    let result = state.it.search_videos(client, &query).await.map_err(|e| e.to_string())?;
+    let mut result = state.it.search_videos(client, &query).await.map_err(|e| e.to_string())?;
+    for item in &mut result.items {
+        item.is_video = true;
+    }
     Ok(result.items)
 }
+
+/// Fetch real-time Subscriptions feed from the user's signed-in Google account
+#[tauri::command]
+pub async fn get_youtube_subscriptions(state: St<'_>) -> Result<Vec<SongItem>, String> {
+    crate::videos::get_youtube_subscriptions(&state.db).await
+}
+
+/// Fetch list of YouTube channels the user subscribed to
+#[tauri::command]
+pub async fn get_subscribed_channels(state: St<'_>) -> Result<Vec<crate::videos::SubscribedChannel>, String> {
+    crate::videos::get_subscribed_channels(&state.db).await
+}
+
+/// Fetch latest uploaded videos for a specific channel
+#[tauri::command]
+pub async fn get_channel_videos(state: St<'_>, channel_id: String) -> Result<Vec<SongItem>, String> {
+    crate::videos::get_channel_videos(&state.db, &channel_id).await
+}
+
+/// Fetch personalized home recommendations from YouTube
+#[tauri::command]
+pub async fn get_youtube_recommendations(state: St<'_>) -> Result<Vec<SongItem>, String> {
+    crate::videos::get_youtube_recommendations(&state.db).await
+}
+
+/// Fetch curated non-music trending/popular videos by category
+#[tauri::command]
+pub async fn get_trending_videos(state: St<'_>, category: String) -> Result<Vec<SongItem>, String> {
+    let client = metadata_client(&state)?;
+    crate::videos::get_trending_videos(&category, &state.it, client).await
+}
+
+/// Fetch curated articles feed in native Rust
+#[tauri::command]
+pub async fn get_articles_feed(source: Option<String>) -> Result<Vec<crate::articles::ArticleCard>, String> {
+    crate::articles::get_feed(source).await
+}
+
+/// Extract clean distraction-free article content using Readability in native Rust
+#[tauri::command]
+pub async fn extract_article(url: String) -> Result<crate::articles::ArticleContent, String> {
+    crate::articles::extract(&url).await
+}
+
+// --- Language Immersion: Vocabulary & AnkiConnect ----------------------------
+
+#[tauri::command]
+pub async fn get_word_statuses(
+    state: St<'_>,
+    language: Option<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let lang = language.unwrap_or_else(|| "en".to_string());
+    Ok(state.db.get_word_statuses(&lang))
+}
+
+#[tauri::command]
+pub async fn set_word_status(
+    state: St<'_>,
+    lemma: String,
+    status: String,
+    language: Option<String>,
+) -> Result<(), String> {
+    let lang = language.unwrap_or_else(|| "en".to_string());
+    state
+        .db
+        .set_word_status(&lemma, &status, &lang)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn bulk_set_known(
+    state: St<'_>,
+    lemmas: Vec<String>,
+    language: Option<String>,
+) -> Result<usize, String> {
+    let lang = language.unwrap_or_else(|| "en".to_string());
+    state.db.bulk_set_known(&lemmas, &lang).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_vocab_counts(
+    state: St<'_>,
+    language: Option<String>,
+) -> Result<crate::db::VocabCounts, String> {
+    let lang = language.unwrap_or_else(|| "en".to_string());
+    state.db.get_vocab_counts(&lang).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_flashcard(
+    state: St<'_>,
+    card: crate::db::FlashcardRow,
+) -> Result<(), String> {
+    state.db.save_flashcard(&card).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_flashcards(
+    state: St<'_>,
+    limit: Option<usize>,
+) -> Result<Vec<crate::db::FlashcardRow>, String> {
+    let l = limit.unwrap_or(100);
+    state.db.get_flashcards(l).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn anki_status(port: Option<u16>) -> Result<crate::anki::AnkiStatus, String> {
+    Ok(crate::anki::check_status(port).await)
+}
+
+#[tauri::command]
+pub async fn anki_get_decks(port: Option<u16>) -> Result<Vec<String>, String> {
+    crate::anki::get_decks(port).await
+}
+
+#[tauri::command]
+pub async fn anki_get_models(port: Option<u16>) -> Result<Vec<String>, String> {
+    crate::anki::get_models(port).await
+}
+
+#[tauri::command]
+pub async fn anki_mine_card(
+    state: St<'_>,
+    req: crate::anki::MineCardRequest,
+    port: Option<u16>,
+) -> Result<crate::anki::MineCardResponse, String> {
+    // 1. Try mining to Anki
+    let res = crate::anki::mine_card(req.clone(), port).await?;
+
+    // 2. Also save to local flashcards table
+    let card = crate::db::FlashcardRow {
+        id: format!("fc-{}", crate::db::now_secs()),
+        word: req.word.clone(),
+        lemma: req.lemma.clone(),
+        sentence: req.sentence.clone(),
+        translation: req.translation.clone(),
+        source_title: req.source_title.clone(),
+        source_url: req.source_url.clone(),
+        audio_url: req.audio_url.clone(),
+        image_url: req.image_url.clone(),
+        anki_note_id: res.anki_note_id,
+        status: if res.success { "synced".to_string() } else { "mined".to_string() },
+        created_at: crate::db::now_secs(),
+    };
+    let _ = state.db.save_flashcard(&card);
+
+    // 3. Mark word as 'learning' in word_status if it's new
+    let _ = state.db.set_word_status(&req.lemma, "learning", "en");
+
+    Ok(res)
+}
+
+#[tauri::command]
+pub async fn anki_sync_intervals(
+    state: St<'_>,
+    language: Option<String>,
+    port: Option<u16>,
+) -> Result<usize, String> {
+    let lang = language.unwrap_or_else(|| "en".to_string());
+    let cards = state.db.get_flashcards(5000).map_err(|e| e.to_string())?;
+    let mut note_ids = Vec::new();
+    let mut note_to_lemma = std::collections::HashMap::new();
+
+    for c in cards {
+        if let Some(nid) = c.anki_note_id {
+            note_ids.push(nid);
+            note_to_lemma.insert(nid, c.lemma);
+        }
+    }
+
+    if note_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let intervals = crate::anki::get_note_intervals(note_ids, port).await?;
+    let mut promoted = 0;
+
+    for (nid, iv) in intervals {
+        // Migaku rule: interval >= 21 days means word is known
+        if iv >= 21 {
+            if let Some(lemma) = note_to_lemma.get(&nid) {
+                let _ = state.db.set_word_status(lemma, "known", &lang);
+                promoted += 1;
+            }
+        }
+    }
+
+    Ok(promoted)
+}
+
+#[tauri::command]
+pub async fn lookup_word(
+    state: St<'_>,
+    word: String,
+    sentence: Option<String>,
+    dict_provider: Option<String>,
+    trans_provider: Option<String>,
+    target_lang: Option<String>,
+    auto_fallback: Option<bool>,
+) -> Result<crate::dict::DictLookupResponse, String> {
+    crate::dict::lookup_word(
+        &state.db,
+        &word,
+        sentence,
+        dict_provider,
+        trans_provider,
+        target_lang,
+        auto_fallback.unwrap_or(true),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_dict_cache(state: St<'_>) -> Result<usize, String> {
+    state.db.clear_dict_cache().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_dict_cache_count(state: St<'_>) -> Result<usize, String> {
+    Ok(state.db.get_dict_cache_count())
+}
+
+#[tauri::command]
+pub async fn ai_explain_word(
+    state: St<'_>,
+    word: String,
+    sentence: String,
+    category: String,
+    system_prompt: String,
+    user_prompt: String,
+) -> Result<crate::ai::AiExplainResponse, String> {
+    let req = crate::ai::AiExplainRequest {
+        word,
+        sentence,
+        category,
+        system_prompt,
+        user_prompt,
+    };
+    crate::ai::query_ai_immersion(&state.db, req).await
+}
+
+#[tauri::command]
+pub async fn get_openrouter_token(state: St<'_>) -> Result<Option<String>, String> {
+    Ok(state.db.get_setting("openrouter_token"))
+}
+
+#[tauri::command]
+pub async fn set_openrouter_token(state: St<'_>, token: String) -> Result<(), String> {
+    state.db.set_setting("openrouter_token", token.trim());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_ai_cache(state: St<'_>) -> Result<usize, String> {
+    state.db.clear_ai_cache().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_ai_cache_count(state: St<'_>) -> Result<usize, String> {
+    Ok(state.db.get_ai_cache_count())
+}
+
+#[tauri::command]
+pub async fn test_openrouter_token(token: String) -> Result<String, String> {
+    crate::ai::test_openrouter_connection(&token).await
+}
+
 
 /// One song or video by id, for a pasted YouTube link (#441). `/next` is the one call that answers
 /// with the id's own title, artists and art; the seed comes back as one of its rows.

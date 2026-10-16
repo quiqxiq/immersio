@@ -167,6 +167,9 @@ fn build(webview: webkit2gtk::WebView, state: Arc<AppState>) -> Result<(), &'sta
                 if let Some(r) = r.as_mut() {
                     let s = area.scale_factor();
                     let (w, h) = (area.allocated_width() * s, area.allocated_height() * s);
+                    if w <= 0 || h <= 0 {
+                        return glib::Propagation::Stop;
+                    }
                     let fbo = current_fbo();
                     match r.render(fbo, w, h) {
                         Ok(()) if WAITING.load(Ordering::Relaxed) => {
