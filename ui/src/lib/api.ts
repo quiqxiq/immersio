@@ -1262,9 +1262,11 @@ export interface ArticleCard {
 	summary: string;
 	link: string;
 	published?: string;
+	published_at?: number;
 	source: string;
 	category: string;
 	image_url?: string;
+	reading_time?: number;
 }
 
 export interface ArticleContent {
@@ -1275,7 +1277,10 @@ export interface ArticleContent {
 	published?: string;
 	hero_image?: string;
 	html: string;
+	markdown: string;
 	text_length: number;
+	reading_time_minutes: number;
+	is_paywall_blocked: boolean;
 }
 
 export const getArticlesFeed = (source?: string) =>

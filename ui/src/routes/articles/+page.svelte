@@ -25,15 +25,18 @@
 
 	const SOURCES = [
 		{ id: 'all', label: 'Semua' },
-		{ id: 'bbc', label: 'BBC Learning English' },
-		{ id: 'nyt', label: 'The New York Times' },
-		{ id: 'guardian', label: 'The Guardian' }
+		{ id: 'devto', label: 'Dev.to' },
+		{ id: 'hackernews', label: 'Hacker News' },
+		{ id: 'freecodecamp', label: 'FreeCodeCamp' },
+		{ id: 'npr', label: 'NPR News' },
+		{ id: 'guardian', label: 'The Guardian' },
+		{ id: 'bbc', label: 'BBC English' }
 	];
 
 	const chipClass = (active: boolean) =>
 		`shrink-0 cursor-pointer rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
 			active
-				? 'bg-primary text-primary-foreground'
+				? 'bg-primary text-primary-foreground shadow-sm'
 				: 'bg-foreground/5 text-foreground/75 hover:bg-foreground/10 hover:text-foreground'
 		}`;
 
@@ -97,11 +100,28 @@
 		}
 	}
 
+	function formatRelativeTime(dateStr?: string, timestamp?: number): string {
+		if (timestamp) {
+			const now = Math.floor(Date.now() / 1000);
+			const diff = now - timestamp;
+			if (diff < 60) return 'Baru saja';
+			if (diff < 3600) return `${Math.floor(diff / 60)} mnt lalu`;
+			if (diff < 86400) return `${Math.floor(diff / 3600)} jam lalu`;
+			if (diff < 172800) return 'Kemarin';
+			if (diff < 604800) return `${Math.floor(diff / 86400)} hari lalu`;
+		}
+		if (!dateStr) return '';
+		return formatDate(dateStr);
+	}
+
 	function getSourceBadgeClass(source: string): string {
 		const s = source.toLowerCase();
-		if (s.includes('bbc')) return 'bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/30';
-		if (s.includes('new york times') || s.includes('nyt')) return 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30';
+		if (s.includes('dev.to') || s.includes('devto')) return 'bg-purple-500/20 text-purple-600 dark:text-purple-400 border border-purple-500/30';
+		if (s.includes('hacker news')) return 'bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30';
+		if (s.includes('freecodecamp')) return 'bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30';
+		if (s.includes('npr')) return 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30';
 		if (s.includes('guardian')) return 'bg-blue-500/20 text-blue-600 dark:text-blue-400 border border-blue-500/30';
+		if (s.includes('bbc')) return 'bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/30';
 		return 'bg-primary/20 text-primary border border-primary/30';
 	}
 
@@ -259,12 +279,15 @@
 						</h3>
 
 						<div class="flex items-center justify-between text-[11px] text-muted-foreground pt-0.5">
-							<span class="truncate">{formatDate(item.published)}</span>
-							{#if item.category}
-								<span class="truncate max-w-[50%] text-right text-[10px] text-muted-foreground/80">
-									{item.category}
-								</span>
-							{/if}
+							<span class="truncate">{formatRelativeTime(item.published, item.published_at)}</span>
+							<div class="flex items-center gap-1.5 truncate max-w-[55%] text-right text-[10px] text-muted-foreground/80">
+								{#if item.reading_time}
+									<span class="shrink-0 font-medium text-foreground/60">{item.reading_time} mnt</span>
+								{/if}
+								{#if item.category}
+									<span class="truncate">{item.category}</span>
+								{/if}
+							</div>
 						</div>
 					</div>
 				</div>

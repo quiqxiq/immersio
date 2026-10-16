@@ -59,9 +59,23 @@ Immersio empowers language learners to achieve natural fluency through authentic
 - **Accurate Metadata Parsing:** Real creator channel names, high-resolution thumbnails, and video durations.
 - **Hardware-Accelerated Native Video:** Smooth H.264 playback accelerated via VA-API on AMD, Intel, and Nvidia GPUs without CPU spikes or frame drops.
 
-### 6. 📰 Immersion Article & Reading Mode
-- Read bilingual and authentic English articles directly within the app.
-- Full interactive word lookup and Anki mining available for every paragraph.
+### 6. 📰 Immersion Article & Reading Suite (3-Step Local Pipeline)
+- **3-Step Local Extraction Pipeline:**
+  1. **Smart Fetching:** `reqwest` with realistic browser headers to prevent anti-bot false alarms.
+  2. **Editorial Content Extraction:** Mozilla Readability ported to native Rust — automatically strips ads, sidebars, cookie banners, and popups.
+  3. **Markdown Transformation (`htmd`):** Converts clean HTML into standard, portable Markdown.
+- **Curated Open-Access & Tech Sources (100% Paywall-Free):**
+  - **Dev.to:** Official REST API integration with real-time software engineering and developer articles.
+  - **Hacker News:** Official Algolia API integration with top trending tech stories, essays, and discussions.
+  - **FreeCodeCamp News:** Comprehensive programming tutorials and deep dives.
+  - **NPR News:** High-register standard American journalism on world news, science, and culture.
+  - **The Guardian:** Open British international journalism across world affairs and science.
+  - **BBC Learning English:** Specially tailored bite-sized episodes with vocabulary definitions built-in.
+- **Interactive Immersion & Note Export:**
+  - Click any word for Cambridge dictionary definitions, pronunciation TTS, and 1-click AnkiSRS mining.
+  - Sentence-level hover highlighting matching the video transcript experience.
+  - One-click **"Salin MD"** to export articles directly to Obsidian, Notion, or Logseq for language retention.
+  - Automatic detection of paywall / bot-challenge stubs with a friendly fallback to the original browser.
 
 ---
 

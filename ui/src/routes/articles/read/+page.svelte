@@ -7,6 +7,7 @@
 		ArrowLeft01Icon,
 		ExternalLinkIcon,
 		CopyLinkIcon,
+		Copy01Icon,
 		BookOpenTextIcon,
 		VolumeHighIcon,
 		Cancel01Icon,
@@ -163,6 +164,19 @@
 			toast('Tautan artikel disalin ke clipboard');
 		} catch {
 			// ignore
+		}
+	}
+
+	async function copyMarkdown() {
+		if (!article?.markdown) {
+			toast('Konten Markdown belum tersedia');
+			return;
+		}
+		try {
+			await copyText(article.markdown);
+			toast('Artikel disalin dalam format Markdown (Obsidian / Notion)');
+		} catch {
+			toast('Gagal menyalin Markdown');
 		}
 	}
 
@@ -381,6 +395,17 @@
 				</button>
 			</div>
 
+			<!-- Copy Markdown (Obsidian / Notion) -->
+			<button
+				type="button"
+				onclick={copyMarkdown}
+				class="inline-flex items-center gap-1.5 rounded-full bg-foreground/5 px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:bg-foreground/10 hover:text-foreground cursor-pointer"
+				title="Salin Artikel sebagai Markdown (Obsidian / Notion)"
+			>
+				<HugeiconsIcon icon={Copy01Icon} size={13} />
+				<span class="hidden sm:inline">Salin MD</span>
+			</button>
+
 			<!-- Copy Link -->
 			<button
 				type="button"
@@ -450,6 +475,24 @@
 		{:else if article}
 			{@const articleStats = vocab.computeTextStats((article.html || '').replace(/<[^>]*>/g, ' ') || article.title)}
 			<article class="space-y-6 pt-2">
+				<!-- Paywall / Bot-block Alert Banner if detected -->
+				{#if article.is_paywall_blocked}
+					<div class="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-600 dark:text-amber-400 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+						<div class="space-y-0.5">
+							<span class="font-bold flex items-center gap-1.5">
+								⚠️ Proteksi Paywall / Akses Terbatas Terdeteksi
+							</span>
+							<p class="text-muted-foreground text-[11px]">
+								Situs web ini membatasi akses pembaca otomatis (paywall atau verifikasi browser). Sebagian isi artikel mungkin terpotong.
+							</p>
+						</div>
+						<Button size="sm" variant="outline" onclick={openInBrowser} class="shrink-0 rounded-full text-xs">
+							Buka di Web Asli
+							<HugeiconsIcon icon={ExternalLinkIcon} size={12} class="ml-1.5" />
+						</Button>
+					</div>
+				{/if}
+
 				<!-- Article Header & Meta -->
 				<header class="space-y-3 border-b border-border/40 pb-5">
 					<div class="flex flex-wrap items-center gap-2 text-xs">
@@ -461,7 +504,9 @@
 							<time class="text-muted-foreground">{formatDate(article.published)}</time>
 						{/if}
 						<span class="text-muted-foreground">•</span>
-						<span class="text-muted-foreground">{estimatedReadTime(article.text_length)}</span>
+						<span class="text-muted-foreground">
+							{article.reading_time_minutes ? `${article.reading_time_minutes} menit baca` : estimatedReadTime(article.text_length)}
+						</span>
 					</div>
 
 					<h1
