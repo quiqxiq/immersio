@@ -2,7 +2,7 @@
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import { SubtitleIcon } from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
-	import { playback, videoTranscript } from '$lib/player.svelte';
+	import { playback, shadowing, videoTranscript } from '$lib/player.svelte';
 	import WordPopup from '$lib/components/WordPopup.svelte';
 	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
 	import { vocab } from '$lib/vocab.svelte';
@@ -72,7 +72,7 @@
 		}
 	}
 
-	// Watch current time and smoothly update active subtitle index and auto-scroll
+	// Watch current time and update active subtitle index without moving the outer page
 	$effect(() => {
 		const posMs = playback.position * 1000;
 		if (!transcript || !transcript.lines || transcript.lines.length === 0) {
@@ -95,10 +95,13 @@
 		if (found !== activeIndex) {
 			activeIndex = found;
 			videoTranscript.activeIndex = found;
-			if (!userScrolled && found >= 0 && scroller) {
+			// Strictly prevent auto-scrolling when in Shadowing mode or when paused.
+			// Only scroll the local container itself (never window or outer document).
+			if (!shadowing.active && !playback.paused && !userScrolled && found >= 0 && scroller) {
 				const el = scroller.querySelector(`[data-index="${found}"]`) as HTMLElement;
 				if (el) {
-					el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+					const targetTop = el.offsetTop - scroller.clientHeight / 2;
+					scroller.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
 				}
 			}
 		}

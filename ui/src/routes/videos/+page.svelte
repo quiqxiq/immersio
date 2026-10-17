@@ -16,7 +16,7 @@
 	import * as api from '$lib/api';
 	import type { SongItem, SubscribedChannel } from '$lib/api';
 	import { parseYtLink } from '$lib/ytlink';
-	import { np, playSong, auth } from '$lib/player.svelte';
+	import { np, playSong, auth, shadowing } from '$lib/player.svelte';
 	import { thumb } from '$lib/thumb';
 	import { getCached, putCached } from '$lib/pagecache';
 	import { Skeleton } from '$lib/components/ui/skeleton';
@@ -247,6 +247,9 @@
 	}
 
 	function playVideoTrack(v: SongItem) {
+		shadowing.active = false;
+		shadowing.lastPausedIndex = -1;
+		shadowing.isWaiting = false;
 		const item: SongItem = { ...v, is_video: true };
 		playSong(item);
 		np.open = true;

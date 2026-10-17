@@ -134,11 +134,11 @@ fn tune_webview(win: &tauri::WebviewWindow, media: bool) {
             settings.set_enable_page_cache(false);
             settings.set_enable_media(media);
             settings.set_enable_mediasource(false);
-            settings.set_enable_media_stream(false);
-            settings.set_enable_media_capabilities(false);
+            settings.set_enable_media_stream(true);
+            settings.set_enable_media_capabilities(true);
             settings.set_enable_encrypted_media(false);
-            settings.set_enable_webaudio(false);
-            settings.set_enable_webrtc(false);
+            settings.set_enable_webaudio(true);
+            settings.set_enable_webrtc(true);
             settings.set_enable_webgl(false);
             settings.set_enable_html5_database(false); // WebSQL. localStorage is a separate switch.
 
@@ -149,6 +149,14 @@ fn tune_webview(win: &tauri::WebviewWindow, media: bool) {
             // WKWebView's allowsBackForwardNavigationGestures, which wry does not expose.
             settings.set_enable_back_forward_navigation_gestures(true);
         }
+
+        // Automatically grant microphone / audio media capture permissions on Linux
+        use webkit2gtk::PermissionRequestExt;
+        webview.connect_permission_request(|_wv, req| {
+            req.allow();
+            true
+        });
+
         heal_lost_release(&webview);
     });
     match res {

@@ -32,6 +32,9 @@
 
 	// User voice recording practice state (Web Audio API)
 	let isRecording = $state(false);
+	let recSeconds = $state(0);
+	let recTimer: any = null;
+	let recordingError = $state<string | null>(null);
 	let userAudioUrl = $state<string | null>(null);
 	let mediaRecorder: MediaRecorder | null = null;
 	let audioChunks: Blob[] = [];
@@ -98,29 +101,55 @@
 	}
 
 	async function toggleRecording() {
+		recordingError = null;
 		if (isRecording) {
 			if (mediaRecorder && mediaRecorder.state !== 'inactive') {
 				mediaRecorder.stop();
 			}
+			clearInterval(recTimer);
 			isRecording = false;
 		} else {
+			if (!navigator?.mediaDevices?.getUserMedia) {
+				recordingError = 'Fitur mikrofon tidak didukung webview ini.';
+				return;
+			}
 			try {
 				const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 				audioChunks = [];
-				mediaRecorder = new MediaRecorder(stream);
+				let options: MediaRecorderOptions = {};
+				if (typeof MediaRecorder.isTypeSupported === 'function') {
+					if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+						options = { mimeType: 'audio/webm;codecs=opus' };
+					} else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+						options = { mimeType: 'audio/ogg;codecs=opus' };
+					} else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+						options = { mimeType: 'audio/mp4' };
+					}
+				}
+
+				mediaRecorder = options.mimeType ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
 				mediaRecorder.ondataavailable = (e) => {
-					if (e.data.size > 0) audioChunks.push(e.data);
+					if (e.data && e.data.size > 0) audioChunks.push(e.data);
 				};
 				mediaRecorder.onstop = () => {
-					const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+					const mime = mediaRecorder?.mimeType || 'audio/webm';
+					const audioBlob = new Blob(audioChunks, { type: mime });
 					if (userAudioUrl) URL.revokeObjectURL(userAudioUrl);
 					userAudioUrl = URL.createObjectURL(audioBlob);
 					stream.getTracks().forEach((t) => t.stop());
 				};
 				mediaRecorder.start();
 				isRecording = true;
-			} catch (err) {
+				recSeconds = 0;
+				clearInterval(recTimer);
+				recTimer = setInterval(() => {
+					recSeconds += 1;
+				}, 1000);
+			} catch (err: any) {
 				console.error('Mikrofon tidak dapat diakses:', err);
+				recordingError = err?.message || 'Izin mikrofon ditolak.';
+				isRecording = false;
+				clearInterval(recTimer);
 			}
 		}
 	}
@@ -128,7 +157,10 @@
 	function playUserAudio() {
 		if (userAudioUrl) {
 			const a = new Audio(userAudioUrl);
-			a.play().catch(() => {});
+			a.play().catch((err) => {
+				console.error('Gagal memutar rekaman suara:', err);
+				recordingError = 'Format rekaman tidak dapat diputar.';
+			});
 		}
 	}
 
@@ -225,6 +257,7 @@
 			window.removeEventListener('keydown', handleKeydown);
 			if (userAudioUrl) URL.revokeObjectURL(userAudioUrl);
 			clearTimeout(autoTimerTimeout);
+			clearInterval(recTimer);
 		};
 	});
 
@@ -547,7 +580,13 @@
 						</div>
 
 						<!-- Microphone Voice Practice Widget -->
-						<div class="flex items-center gap-2">
+						<div class="flex items-center gap-2 flex-wrap">
+							{#if recordingError}
+								<span class="text-[11px] font-medium text-rose-500 bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 rounded-lg">
+									{recordingError}
+								</span>
+							{/if}
+
 							<button
 								type="button"
 								onclick={toggleRecording}
@@ -557,7 +596,7 @@
 								title="Rekam suara Anda menirukan aktor (Shortcut: M)"
 							>
 								<span class="h-2 w-2 rounded-full {isRecording ? 'bg-white' : 'bg-rose-500'}"></span>
-								<span>{isRecording ? 'Merekam... [M]' : 'Latih Suara (M)'}</span>
+								<span>{isRecording ? `Merekam... (${recSeconds}s) [M]` : 'Latih Suara (M)'}</span>
 							</button>
 
 							{#if userAudioUrl}
