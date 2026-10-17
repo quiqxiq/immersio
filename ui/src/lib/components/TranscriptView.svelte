@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import { SubtitleIcon } from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
@@ -8,6 +9,9 @@
 	import { vocab } from '$lib/vocab.svelte';
 	import { cleanWordToken } from '$lib/lemma';
 
+	// Memory cache across component renders for 0ms instant subtitle display
+	const transcriptMemoryCache = new Map<string, api.Lyrics>();
+
 	let transcript = $state<api.Lyrics | null>(null);
 	let loading = $state(true);
 	let activeIndex = $state(-1);
@@ -15,6 +19,7 @@
 	let userScrolled = $state(false);
 	let scrollTimeout: any = null;
 	let viewMode = $state<'sentence' | 'raw'>('sentence');
+	let lastLoadedVideoId = '';
 
 	// Selected word popup state for dictionary lookups
 	let selectedWord = $state<string | null>(null);
@@ -27,6 +32,23 @@
 	let selectedAiAnchorRect = $state<DOMRect | null>(null);
 
 	async function fetchTranscript(videoId: string) {
+		if (!videoId) return;
+
+		// 1. Instant memory cache hit: 0ms UI response
+		const cached = transcriptMemoryCache.get(videoId);
+		if (cached && cached.lines && cached.lines.length > 0) {
+			transcript = cached;
+			videoTranscript.lines = cached.lines;
+			videoTranscript.sentences =
+				cached.sentences && cached.sentences.length > 0
+					? cached.sentences
+					: reconstructSentences(cached.lines);
+			videoTranscript.source = cached.source || '';
+			loading = false;
+			videoTranscript.loading = false;
+			return;
+		}
+
 		loading = true;
 		videoTranscript.loading = true;
 		transcript = null;
@@ -36,6 +58,7 @@
 		videoTranscript.activeIndex = -1;
 		videoTranscript.activeSentenceIndex = -1;
 		userScrolled = false;
+
 		try {
 			let res: api.Lyrics | null = null;
 			// 1. First try YouTube Subtitles explicitly
@@ -62,14 +85,22 @@
 					duration: playback.duration > 0 ? playback.duration : undefined
 				});
 			}
-			transcript = res;
-			const lines = res?.lines || [];
-			videoTranscript.lines = lines;
-			videoTranscript.sentences =
-				res?.sentences && res.sentences.length > 0
-					? res.sentences
-					: reconstructSentences(lines);
-			videoTranscript.source = res?.source || '';
+
+			if (res && res.lines && res.lines.length > 0) {
+				transcript = res;
+				transcriptMemoryCache.set(videoId, res);
+				const lines = res.lines;
+				videoTranscript.lines = lines;
+				videoTranscript.sentences =
+					res.sentences && res.sentences.length > 0
+						? res.sentences
+						: reconstructSentences(lines);
+				videoTranscript.source = res.source || '';
+			} else {
+				transcript = null;
+				videoTranscript.lines = [];
+				videoTranscript.sentences = [];
+			}
 		} catch (e) {
 			console.error('Error fetching video transcript:', e);
 			transcript = null;
@@ -85,9 +116,9 @@
 	$effect(() => {
 		const posMs = playback.position * 1000;
 		if (!transcript || !transcript.lines || transcript.lines.length === 0) {
-			activeIndex = -1;
-			videoTranscript.activeIndex = -1;
-			videoTranscript.activeSentenceIndex = -1;
+			if (activeIndex !== -1) activeIndex = -1;
+			if (videoTranscript.activeIndex !== -1) videoTranscript.activeIndex = -1;
+			if (videoTranscript.activeSentenceIndex !== -1) videoTranscript.activeSentenceIndex = -1;
 			return;
 		}
 
@@ -105,16 +136,22 @@
 		// Also update active sentence index
 		const sentences = videoTranscript.sentences;
 		let foundSentence = -1;
-		for (let s = 0; s < sentences.length; s++) {
-			const st = sentences[s];
-			if (posMs >= st.start_ms && posMs < st.end_ms + 100) {
-				foundSentence = s;
-				break;
-			} else if (posMs >= st.start_ms) {
-				foundSentence = s;
+		if (sentences && sentences.length > 0) {
+			for (let s = 0; s < sentences.length; s++) {
+				const st = sentences[s];
+				if (posMs >= st.start_ms && posMs < st.end_ms + 100) {
+					foundSentence = s;
+					break;
+				} else if (posMs >= st.start_ms) {
+					foundSentence = s;
+				}
 			}
 		}
-		videoTranscript.activeSentenceIndex = foundSentence;
+
+		// Only mutate if index changed to avoid thrashing Svelte's reactive graph
+		if (videoTranscript.activeSentenceIndex !== foundSentence) {
+			videoTranscript.activeSentenceIndex = foundSentence;
+		}
 
 		if (found !== activeIndex) {
 			activeIndex = found;
@@ -131,11 +168,14 @@
 		}
 	});
 
-	// Watch track change
+	// Watch track change - STRICTLY guarded so pause / seek never refetches or wipes transcript
 	$effect(() => {
 		const vid = playback.now?.videoId;
-		if (vid) {
-			fetchTranscript(vid);
+		if (vid && vid !== lastLoadedVideoId) {
+			lastLoadedVideoId = vid;
+			untrack(() => {
+				fetchTranscript(vid);
+			});
 		}
 	});
 

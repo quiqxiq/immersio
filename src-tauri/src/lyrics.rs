@@ -177,8 +177,28 @@ pub async fn get_lyrics(
     req: LyricsRequest,
     source: Option<String>,
 ) -> Result<Option<Lyrics>, String> {
+    let video_id = req.video_id.clone();
     let lyrics = match source {
-        Some(id) => preview(state, req, &id).await?,
+        Some(id) => {
+            if id == "youtube" {
+                if let Some(Some(json)) = state.db.get_lyrics(&video_id, now_secs(), MISS_TTL_SECS) {
+                    if let Ok(cached) = serde_json::from_str::<Lyrics>(&json) {
+                        if cached.source.starts_with("YouTube") || (cached.synced && !cached.lines.is_empty()) {
+                            return Ok(Some(cached));
+                        }
+                    }
+                }
+            }
+            let res = preview(state, req, &id).await?;
+            if let Some(ref l) = res {
+                if l.synced && !l.lines.is_empty() {
+                    if let Ok(json) = serde_json::to_string(l) {
+                        state.db.put_lyrics(&video_id, Some(&json), now_secs());
+                    }
+                }
+            }
+            res
+        }
         None => cached_or_fetched(state, req).await,
     };
     Ok(lyrics.map(|mut l| {
@@ -377,26 +397,65 @@ struct CaptionSegment {
     offset_ms: Option<u64>,
 }
 
-/// Fallback parser for YouTube's `srv3` XML subtitle format (`<p t="123" d="456">...</p>`).
-fn parse_xml_timedtext(xml: &str) -> Vec<LyricLine> {
+/// Unescapes common and numeric XML/HTML entities found in YouTube subtitles.
+fn unescape_xml_entities(input: &str) -> String {
+    let s = input
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#10;", "\n")
+        .replace("&#13;", "");
+
+    static RE_NUM_ENT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_num = RE_NUM_ENT.get_or_init(|| regex::Regex::new(r"&#(x[0-9a-fA-F]+|[0-9]+);").unwrap());
+    re_num
+        .replace_all(&s, |caps: &regex::Captures| {
+            let code_str = &caps[1];
+            let code = if let Some(hex) = code_str.strip_prefix('x') {
+                u32::from_str_radix(hex, 16).ok()
+            } else {
+                code_str.parse::<u32>().ok()
+            };
+            code.and_then(char::from_u32)
+                .map(|c| c.to_string())
+                .unwrap_or_default()
+        })
+        .to_string()
+}
+
+/// Robust caption parser supporting all YouTube subtitle XML formats:
+/// 1. `<p t="ms" d="ms">...</p>` (`srv1`, `srv3`, timedtext format 3) with arbitrary attribute order and child tags.
+/// 2. `<text start="sec" dur="sec">...</text>` (standard timedtext format) with fractional seconds and child tags.
+pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
     let mut lines = Vec::new();
-    static RE_P: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re_p = RE_P.get_or_init(|| regex::Regex::new(r#"<p\s+[^>]*t="(\d+)"(?:[^>]*d="(\d+)")?[^>]*>(.*?)</p>"#).unwrap());
     static RE_TAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re_tags = RE_TAGS.get_or_init(|| regex::Regex::new(r#"<[^>]+>"#).unwrap());
 
+    // 1. Try <p ...>...</p> (format srv1 / srv3)
+    static RE_P_BLOCK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_p = RE_P_BLOCK.get_or_init(|| regex::Regex::new(r#"(?s)<p\b([^>]*)>(.*?)</p>"#).unwrap());
+
+    static RE_T_ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_t = RE_T_ATTR.get_or_init(|| regex::Regex::new(r#"\bt="(\d+)""#).unwrap());
+    static RE_D_ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_d = RE_D_ATTR.get_or_init(|| regex::Regex::new(r#"\bd="(\d+)""#).unwrap());
+
     for cap in re_p.captures_iter(xml) {
-        if let (Some(t_match), Some(txt_match)) = (cap.get(1), cap.get(3)) {
+        let attrs = cap.get(1).map_or("", |m| m.as_str());
+        let body = cap.get(2).map_or("", |m| m.as_str());
+
+        if let Some(t_match) = re_t.captures(attrs).and_then(|c| c.get(1)) {
             if let Ok(ms) = t_match.as_str().parse::<u64>() {
-                let duration_opt = cap.get(2).and_then(|d| d.as_str().parse::<u64>().ok());
-                let stripped = re_tags.replace_all(txt_match.as_str(), "");
-                let unescaped = stripped
-                    .replace("&amp;", "&")
-                    .replace("&quot;", "\"")
-                    .replace("&#39;", "'")
-                    .replace("&apos;", "'")
-                    .replace("&lt;", "<")
-                    .replace("&gt;", ">");
+                let duration_opt = re_d
+                    .captures(attrs)
+                    .and_then(|c| c.get(1))
+                    .and_then(|d| d.as_str().parse::<u64>().ok());
+
+                let stripped = re_tags.replace_all(body, "");
+                let unescaped = unescape_xml_entities(&stripped);
                 let text = unescaped.trim();
                 if !text.is_empty() && text != "\n" {
                     let mut line = LyricLine::simple(Some(ms), text.to_string());
@@ -406,6 +465,47 @@ fn parse_xml_timedtext(xml: &str) -> Vec<LyricLine> {
             }
         }
     }
+
+    if !lines.is_empty() {
+        lines.sort_by_key(|l| l.time_ms.unwrap_or(0));
+        return lines;
+    }
+
+    // 2. Try <text ...>...</text> (standard YouTube timedtext format)
+    static RE_TEXT_BLOCK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_text = RE_TEXT_BLOCK.get_or_init(|| regex::Regex::new(r#"(?s)<text\b([^>]*)>(.*?)</text>"#).unwrap());
+
+    static RE_START_ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_start = RE_START_ATTR.get_or_init(|| regex::Regex::new(r#"\bstart="([\d.]+)""#).unwrap());
+    static RE_DUR_ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_dur = RE_DUR_ATTR.get_or_init(|| regex::Regex::new(r#"\bdur="([\d.]+)""#).unwrap());
+
+    for cap in re_text.captures_iter(xml) {
+        let attrs = cap.get(1).map_or("", |m| m.as_str());
+        let body = cap.get(2).map_or("", |m| m.as_str());
+
+        if let Some(s_match) = re_start.captures(attrs).and_then(|c| c.get(1)) {
+            if let Ok(secs) = s_match.as_str().parse::<f64>() {
+                let ms = (secs * 1000.0).round() as u64;
+                let duration_opt = re_dur
+                    .captures(attrs)
+                    .and_then(|c| c.get(1))
+                    .and_then(|d| d.as_str().parse::<f64>().ok())
+                    .map(|d_secs| (d_secs * 1000.0).round() as u64);
+
+                let stripped = re_tags.replace_all(body, "");
+                let unescaped = unescape_xml_entities(&stripped);
+                let text = unescaped.trim();
+                if !text.is_empty() && text != "\n" {
+                    let mut line = LyricLine::simple(Some(ms), text.to_string());
+                    line.end_time_ms = duration_opt.map(|d| ms + d);
+                    lines.push(line);
+                }
+            }
+        }
+    }
+
+    lines.sort_by_key(|l| l.time_ms.unwrap_or(0));
     lines
 }
 
@@ -440,117 +540,123 @@ async fn youtube_get(
     }
 
     // 2. Next, check Closed Captions (subtitles) from YouTube player endpoint.
-    // Try ANDROID_VR first (which reliably returns full captions for YouTube videos),
-    // and fallback to WEB_REMIX, VISIONOS, and TVHTML5_SIMPLY.
+    // Try WEB_REMIX (MAIN_CLIENT) first, then TVHTML5_SIMPLY and VISIONOS.
     let caption_clients = [
-        "ANDROID_VR_1_65_10",
-        "ANDROID_VR_1_43_32",
         innertube::MAIN_CLIENT,
-        "VISIONOS",
         "TVHTML5_SIMPLY",
+        "VISIONOS",
     ];
     for client_key in caption_clients {
         if let Some(client) = state.clients.get(client_key) {
             if let Ok(resp) = state.it.player(client, &req.video_id, None, None, None).await {
                 if let Some(captions) = &resp.captions {
                     if let Some((caption_url, label)) = captions.best_caption() {
-                        // Clean existing fmt parameter and request fmt=json3
-                        let json_url = if caption_url.contains("fmt=") {
-                            let mut clean = String::new();
-                            for (i, p) in caption_url.split('&').enumerate() {
-                                if p.starts_with("fmt=") {
-                                    continue;
-                                }
-                                if i > 0 && !clean.is_empty() {
-                                    clean.push('&');
-                                }
-                                clean.push_str(p);
-                            }
-                            format!("{clean}&fmt=json3")
-                        } else {
+                        // Prepare URL asking for fmt=json3
+                        static RE_FMT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+                        let re_fmt = RE_FMT.get_or_init(|| regex::Regex::new(r"([?&])fmt=[^&]*").unwrap());
+                        let json_url = if re_fmt.is_match(&caption_url) {
+                            re_fmt.replace_all(&caption_url, "$1fmt=json3").to_string()
+                        } else if caption_url.contains('?') {
                             format!("{caption_url}&fmt=json3")
+                        } else {
+                            format!("{caption_url}?fmt=json3")
                         };
 
                         let http = reqwest::Client::builder()
-                            .user_agent(&client.user_agent)
-                            .timeout(Duration::from_secs(10))
+                            .timeout(Duration::from_secs(4))
                             .build()
                             .unwrap_or_else(|_| crate::http::client().clone());
 
+                        let mut body_opt = None;
                         if let Ok(r) = http.get(&json_url).send().await {
-                            if let Ok(body_text) = r.text().await {
-                                // Try parsing as json3 first
-                                if let Ok(events) = serde_json::from_str::<CaptionEvents>(&body_text) {
-                                    let mut lines = Vec::new();
-                                    for ev in events.events {
-                                        let line_start = ev.start_ms;
-                                        let line_duration = ev.duration_ms;
-                                        let line_end = match (line_start, line_duration) {
-                                            (Some(s), Some(d)) => Some(s + d),
-                                            _ => None,
-                                        };
+                            if let Ok(txt) = r.text().await {
+                                if !txt.trim().is_empty() {
+                                    body_opt = Some(txt);
+                                }
+                            }
+                        }
 
-                                        let mut words = Vec::new();
-                                        let mut full_text = String::new();
+                        // If json_url failed or returned empty, try raw caption_url
+                        if body_opt.is_none() {
+                            if let Ok(r) = http.get(&caption_url).send().await {
+                                if let Ok(txt) = r.text().await {
+                                    if !txt.trim().is_empty() {
+                                        body_opt = Some(txt);
+                                    }
+                                }
+                            }
+                        }
 
-                                        for s in &ev.segs {
-                                            if let Some(utf8) = &s.utf8 {
-                                                full_text.push_str(utf8);
-                                            }
+                        if let Some(body_text) = body_opt {
+                            // Try parsing as json3 first
+                            if let Ok(events) = serde_json::from_str::<CaptionEvents>(&body_text) {
+                                let mut lines = Vec::new();
+                                for ev in events.events {
+                                    let line_start = ev.start_ms;
+                                    let line_duration = ev.duration_ms;
+                                    let line_end = match (line_start, line_duration) {
+                                        (Some(s), Some(d)) => Some(s + d),
+                                        _ => None,
+                                    };
+
+                                    let mut words = Vec::new();
+                                    let mut full_text = String::new();
+
+                                    for s in &ev.segs {
+                                        if let Some(utf8) = &s.utf8 {
+                                            full_text.push_str(utf8);
                                         }
-                                        let text = full_text.trim();
-                                        if !text.is_empty() && text != "\n" {
-                                            if let Some(base_ms) = line_start {
-                                                for s in &ev.segs {
-                                                    if let Some(utf8) = &s.utf8 {
-                                                        let trimmed = utf8.trim();
-                                                        if !trimmed.is_empty() && trimmed != "\n" {
-                                                            let w_start = base_ms + s.offset_ms.unwrap_or(0);
-                                                            let w_end = w_start + 350;
-                                                            words.push(LyricWord {
-                                                                text: trimmed.to_string(),
-                                                                start_ms: w_start,
-                                                                end_ms: w_end,
-                                                            });
-                                                        }
+                                    }
+                                    let text = full_text.trim();
+                                    if !text.is_empty() && text != "\n" {
+                                        if let Some(base_ms) = line_start {
+                                            for s in &ev.segs {
+                                                if let Some(utf8) = &s.utf8 {
+                                                    let trimmed = utf8.trim();
+                                                    if !trimmed.is_empty() && trimmed != "\n" {
+                                                        let w_start = base_ms + s.offset_ms.unwrap_or(0);
+                                                        let w_end = w_start + 350;
+                                                        words.push(LyricWord {
+                                                            text: trimmed.to_string(),
+                                                            start_ms: w_start,
+                                                            end_ms: w_end,
+                                                        });
                                                     }
                                                 }
                                             }
-
-                                            let mut line = LyricLine::simple(line_start, text.to_owned());
-                                            line.end_time_ms = line_end;
-                                            if !words.is_empty() {
-                                                line.words = Some(words);
-                                            }
-                                            lines.push(line);
                                         }
-                                    }
-                                    if !lines.is_empty() {
-                                        let sentences = reconstruct_sentences(&lines);
-                                        return Ok(Some(Lyrics {
-                                            source: format!("YouTube Subtitles ({label})"),
-                                            synced: true,
-                                            sentences: Some(sentences),
-                                            lines,
-                                            ..Default::default()
-                                        }));
-                                    }
-                                }
 
-                                // Fallback: try parsing as srv3/xml if json3 failed or returned XML
-                                if body_text.contains("<timedtext") || body_text.contains("<p ") {
-                                    let lines = parse_xml_timedtext(&body_text);
-                                    if !lines.is_empty() {
-                                        let sentences = reconstruct_sentences(&lines);
-                                        return Ok(Some(Lyrics {
-                                            source: format!("YouTube Subtitles ({label})"),
-                                            synced: true,
-                                            sentences: Some(sentences),
-                                            lines,
-                                            ..Default::default()
-                                        }));
+                                        let mut line = LyricLine::simple(line_start, text.to_owned());
+                                        line.end_time_ms = line_end;
+                                        if !words.is_empty() {
+                                            line.words = Some(words);
+                                        }
+                                        lines.push(line);
                                     }
                                 }
+                                if !lines.is_empty() {
+                                    let sentences = reconstruct_sentences(&lines);
+                                    return Ok(Some(Lyrics {
+                                        source: format!("YouTube Subtitles ({label})"),
+                                        synced: true,
+                                        sentences: Some(sentences),
+                                        lines,
+                                        ..Default::default()
+                                    }));
+                                }
+                            }
+
+                            // Fallback: parse as XML (supports <p> and <text> formats)
+                            let xml_lines = parse_caption_xml(&body_text);
+                            if !xml_lines.is_empty() {
+                                let sentences = reconstruct_sentences(&xml_lines);
+                                return Ok(Some(Lyrics {
+                                    source: format!("YouTube Subtitles ({label})"),
+                                    synced: true,
+                                    sentences: Some(sentences),
+                                    lines: xml_lines,
+                                    ..Default::default()
+                                }));
                             }
                         }
                     }
@@ -2109,6 +2215,43 @@ mod tests {
         assert_eq!(muxed.len(), 1);
         assert!(muxed[0].words.is_some());
         assert_eq!(muxed[0].translation.as_deref(), Some("Halo dunia"));
+    }
+
+    #[test]
+    fn test_parse_caption_xml_formats() {
+        // Format 1: Standard YouTube timedtext (<text start="sec" dur="sec">)
+        let xml_standard = r#"<?xml version="1.0" encoding="utf-8" ?>
+<transcript>
+  <text start="1.5" dur="3.0">Hello &amp; welcome to the course!</text>
+  <text dur="2.4" start="5.0">It&#39;s a great day &quot;today&quot;.</text>
+</transcript>"#;
+        let lines1 = parse_caption_xml(xml_standard);
+        assert_eq!(lines1.len(), 2);
+        assert_eq!(lines1[0].time_ms, Some(1500));
+        assert_eq!(lines1[0].end_time_ms, Some(4500));
+        assert_eq!(lines1[0].text, "Hello & welcome to the course!");
+        assert_eq!(lines1[1].time_ms, Some(5000));
+        assert_eq!(lines1[1].end_time_ms, Some(7400));
+        assert_eq!(lines1[1].text, "It's a great day \"today\".");
+
+        // Format 2: YouTube srv3 format (<p t="ms" d="ms">) with inverted attribute order
+        let xml_srv3 = r#"<timedtext format="3">
+<body>
+  <p d="3200" t="12000"><s p="1">Good</s> <s>morning</s>!</p>
+  <p t="16000" d="2500">
+    Multiline subtitle
+    with child &lt;tags&gt;
+  </p>
+</body>
+</timedtext>"#;
+        let lines2 = parse_caption_xml(xml_srv3);
+        assert_eq!(lines2.len(), 2);
+        assert_eq!(lines2[0].time_ms, Some(12000));
+        assert_eq!(lines2[0].end_time_ms, Some(15200));
+        assert_eq!(lines2[0].text, "Good morning!");
+        assert_eq!(lines2[1].time_ms, Some(16000));
+        assert_eq!(lines2[1].end_time_ms, Some(18500));
+        assert!(lines2[1].text.contains("Multiline subtitle"));
     }
 
     /// Are the external providers still alive? Hits them all for real, so it is NOT in the default
