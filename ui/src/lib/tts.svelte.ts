@@ -7,32 +7,54 @@ export interface TTSVoiceOption {
 	accent: string;
 	flag: string;
 	desc: string;
+	badge?: string;
 }
 
 export const TTS_VOICES: TTSVoiceOption[] = [
 	{
-		id: 'en',
-		name: 'American Natural',
+		id: 'en-US-JennyNeural',
+		name: 'Jenny (US)',
 		gender: 'Female',
 		accent: 'American',
 		flag: '🇺🇸',
-		desc: 'Suara natural, artikulasi jelas & intonasi hangat (Pilihan Utama)'
+		desc: 'Suara studio natural, artikulasi jernih & intonasi hangat (Pilihan Utama)',
+		badge: 'Edge Neural'
 	},
 	{
-		id: 'en-GB',
-		name: 'British Natural',
+		id: 'en-US-GuyNeural',
+		name: 'Guy (US)',
+		gender: 'Male',
+		accent: 'American',
+		flag: '🇺🇸',
+		desc: 'Suara pria Amerika bersahabat, ritme santai dan jelas',
+		badge: 'Edge Neural'
+	},
+	{
+		id: 'en-GB-SoniaNeural',
+		name: 'Sonia (UK)',
 		gender: 'Female',
 		accent: 'British',
 		flag: '🇬🇧',
-		desc: 'Aksen British elegan, vokal tajam & pelafalan standar RP'
+		desc: 'Aksen British elegan, vokal tajam & pelafalan standar RP',
+		badge: 'Edge Neural'
 	},
 	{
-		id: 'en-AU',
-		name: 'Australian Natural',
+		id: 'en-GB-RyanNeural',
+		name: 'Ryan (UK)',
+		gender: 'Male',
+		accent: 'British',
+		flag: '🇬🇧',
+		desc: 'Aksen pria British naratif, artikulasi teratur dan lugas',
+		badge: 'Edge Neural'
+	},
+	{
+		id: 'en-AU-NatashaNeural',
+		name: 'Natasha (AU)',
 		gender: 'Female',
 		accent: 'Australian',
 		flag: '🇦🇺',
-		desc: 'Aksen Australian natural & tempo santai'
+		desc: 'Aksen Australian natural & tempo santai',
+		badge: 'Edge Neural'
 	},
 	{
 		id: 'espeak',
@@ -40,13 +62,14 @@ export const TTS_VOICES: TTSVoiceOption[] = [
 		gender: 'Male',
 		accent: 'Offline',
 		flag: '⚡',
-		desc: 'Sintesis lokal 100% offline via espeak-ng, tanpa kuota internet'
+		desc: 'Sintesis lokal 100% offline via espeak-ng, tanpa kuota internet',
+		badge: 'Offline'
 	}
 ];
 
 class TTSStore {
 	// Voice & Audio Parameters
-	voice = $state('en');
+	voice = $state('en-US-JennyNeural');
 	speed = $state(1.0);
 
 	// Playback State
@@ -66,7 +89,10 @@ class TTSStore {
 		if (typeof window !== 'undefined') {
 			const savedVoice = localStorage.getItem('limusic_tts_voice');
 			if (savedVoice) {
-				this.voice = savedVoice;
+				if (savedVoice === 'en') this.voice = 'en-US-JennyNeural';
+				else if (savedVoice === 'en-GB') this.voice = 'en-GB-SoniaNeural';
+				else if (savedVoice === 'en-AU') this.voice = 'en-AU-NatashaNeural';
+				else this.voice = savedVoice;
 			}
 			const savedSpeed = localStorage.getItem('limusic_tts_speed');
 			if (savedSpeed) {

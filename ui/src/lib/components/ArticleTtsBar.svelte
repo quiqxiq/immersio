@@ -190,16 +190,19 @@
 					<!-- Voice Dropdown Popover -->
 					{#if showVoicePicker}
 						<div
-							class="absolute bottom-full right-0 mb-2 w-64 overflow-hidden rounded-2xl border border-border bg-card/95 p-2 shadow-2xl backdrop-blur-xl z-50"
+							class="absolute bottom-full right-0 mb-2 w-72 overflow-hidden rounded-2xl border border-border bg-card/95 p-2 shadow-2xl backdrop-blur-xl z-50"
 							transition:scale={{ duration: 150, start: 0.95 }}
 						>
-							<div class="border-b border-border/50 px-2.5 py-1.5">
+							<div class="border-b border-border/50 px-2.5 py-1.5 flex items-center justify-between">
 								<span class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
 									Pilihan Suara & Aksen
 								</span>
+								<span class="text-[9px] font-semibold text-primary/80 bg-primary/10 rounded px-1.5 py-0.5">
+									Hybrid Edge Engine
+								</span>
 							</div>
 
-							<div class="max-h-56 overflow-y-auto space-y-1 py-1">
+							<div class="max-h-60 overflow-y-auto space-y-1 py-1">
 								{#each TTS_VOICES as vc}
 									<button
 										type="button"
@@ -217,8 +220,13 @@
 												<div class="flex items-center gap-1.5">
 													<span class="text-xs font-semibold">{vc.name}</span>
 													<span class="text-[10px] text-muted-foreground">({vc.accent})</span>
+													{#if vc.badge}
+														<span class="text-[8px] font-bold px-1 rounded {vc.badge === 'Offline' ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400' : 'bg-primary/15 text-primary'}">
+															{vc.badge}
+														</span>
+													{/if}
 												</div>
-												<p class="text-[10px] text-muted-foreground truncate max-w-[155px]">{vc.desc}</p>
+												<p class="text-[10px] text-muted-foreground truncate max-w-[170px]">{vc.desc}</p>
 											</div>
 										</div>
 										{#if tts.voice === vc.id}
