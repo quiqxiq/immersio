@@ -25,6 +25,15 @@ pub struct StreamCandidate {
     pub duration_secs: Option<u32>,
 }
 
+/// A subtitle track found for a video.
+#[derive(Debug, Clone)]
+pub struct SubtitleTrack {
+    pub url: String,
+    pub lang: String,
+    pub lang_name: String,
+    pub auto_generated: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum FallbackError {
     #[error("age-restricted (rustypipe)")]
@@ -83,6 +92,31 @@ pub async fn resolve(video_id: &str, prefer_high: bool) -> Result<StreamCandidat
         title: player.details.name.clone(),
         duration_secs: Some(player.details.duration),
     })
+}
+
+/// Fetch available subtitles for any YouTube video (music or non-music).
+pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleTrack>, FallbackError> {
+    let storage = std::env::temp_dir().join("limusic-rustypipe");
+    std::fs::create_dir_all(&storage).ok();
+    let player = RustyPipe::builder()
+        .storage_dir(storage)
+        .build()
+        .map_err(|e| FallbackError::RustyPipe(e.to_string()))?
+        .query()
+        .player(video_id)
+        .await
+        .map_err(map_err)?;
+
+    Ok(player
+        .subtitles
+        .into_iter()
+        .map(|s| SubtitleTrack {
+            url: s.url,
+            lang: s.lang,
+            lang_name: s.lang_name,
+            auto_generated: s.auto_generated,
+        })
+        .collect())
 }
 
 fn pick_audio(streams: &[AudioStream], prefer_high: bool) -> Option<&AudioStream> {

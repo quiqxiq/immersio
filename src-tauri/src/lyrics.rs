@@ -665,7 +665,42 @@ async fn youtube_get(
         }
     }
 
-    // 3. Fallback to plain text under YouTube's attribution
+    // 3. Fallback: For any YouTube video (programming tutorials, lectures, podcasts, etc.)
+    // where standard InnerTube clients return UNPLAYABLE, extract signed subtitles via rustypipe:
+    if let Ok(tracks) = innertube::rustypipe_fallback::fetch_subtitles(&req.video_id).await {
+        if !tracks.is_empty() {
+            let best = tracks
+                .iter()
+                .find(|t| t.lang.starts_with("en") && !t.auto_generated)
+                .or_else(|| tracks.iter().find(|t| t.lang.starts_with("en")))
+                .or_else(|| tracks.first());
+
+            if let Some(track) = best {
+                let http = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(4))
+                    .build()
+                    .unwrap_or_else(|_| crate::http::client().clone());
+
+                if let Ok(r) = http.get(&track.url).send().await {
+                    if let Ok(txt) = r.text().await {
+                        let xml_lines = parse_caption_xml(&txt);
+                        if !xml_lines.is_empty() {
+                            let sentences = reconstruct_sentences(&xml_lines);
+                            return Ok(Some(Lyrics {
+                                source: format!("YouTube Subtitles ({})", track.lang_name),
+                                synced: true,
+                                sentences: Some(sentences),
+                                lines: xml_lines,
+                                ..Default::default()
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Fallback to plain text under YouTube's attribution
     let bid = match next {
         Ok(n) => n.as_ref().and_then(|n| n.lyrics_browse_id.clone()),
         Err(_) => None,
