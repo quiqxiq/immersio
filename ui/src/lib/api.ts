@@ -1475,5 +1475,8 @@ export const getTrendingVideos = (category: string) =>
 export const getShadowingScenes = (category: string, query?: string) =>
 	invoke<SongItem[]>('get_shadowing_scenes', { category, query: query || null });
 
+export const synthesizeSpeech = (text: string, voice: string = 'en', speed: number = 1.0) =>
+	invoke<string>('synthesize_speech', { text, voice, speed });
+
 
 

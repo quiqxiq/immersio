@@ -3000,6 +3000,16 @@ pub fn theater_fullscreen(window: tauri::WebviewWindow, on: bool) -> Result<(), 
     }
 }
 
+/// Synthesize sentence speech using natural audio with local espeak fallback.
+#[tauri::command]
+pub async fn synthesize_speech(
+    text: String,
+    voice: String,
+    speed: f32,
+) -> Result<String, String> {
+    crate::tts::synthesize_speech(text, voice, speed).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,4 @@
-import { KokoroTTS } from 'kokoro-js';
+import * as api from '$lib/api';
 
 export interface TTSVoiceOption {
 	id: string;
@@ -9,28 +9,44 @@ export interface TTSVoiceOption {
 	desc: string;
 }
 
-export const KOKORO_VOICES: TTSVoiceOption[] = [
-	{ id: 'af_heart', name: 'Heart', gender: 'Female', accent: 'American', flag: '🇺🇸', desc: 'Hangat, ekspresif, & sangat natural (Pilihan Utama)' },
-	{ id: 'af_sarah', name: 'Sarah', gender: 'Female', accent: 'American', flag: '🇺🇸', desc: 'Jelas, bersahabat, & nada santai' },
-	{ id: 'am_adam', name: 'Adam', gender: 'Male', accent: 'American', flag: '🇺🇸', desc: 'Narator buku audio, bariton dalam & tegas' },
-	{ id: 'am_michael', name: 'Michael', gender: 'Male', accent: 'American', flag: '🇺🇸', desc: 'Percakapan kasual & intonasi hidup' },
-	{ id: 'bf_emma', name: 'Emma', gender: 'Female', accent: 'British', flag: '🇬🇧', desc: 'Aksen British formal (RP), artikulasi tajam' },
-	{ id: 'bm_george', name: 'George', gender: 'Male', accent: 'British', flag: '🇬🇧', desc: 'Aksen British klasik, suara tenang & berwibawa' },
-	{ id: 'af_nicole', name: 'Nicole', gender: 'Female', accent: 'American', flag: '🇺🇸', desc: 'Lembut & ritme membaca stabil' },
-	{ id: 'bf_isabella', name: 'Isabella', gender: 'Female', accent: 'British', flag: '🇬🇧', desc: 'Elegan & tempo teratur' }
+export const TTS_VOICES: TTSVoiceOption[] = [
+	{
+		id: 'en',
+		name: 'American Natural',
+		gender: 'Female',
+		accent: 'American',
+		flag: '🇺🇸',
+		desc: 'Suara natural, artikulasi jelas & intonasi hangat (Pilihan Utama)'
+	},
+	{
+		id: 'en-GB',
+		name: 'British Natural',
+		gender: 'Female',
+		accent: 'British',
+		flag: '🇬🇧',
+		desc: 'Aksen British elegan, vokal tajam & pelafalan standar RP'
+	},
+	{
+		id: 'en-AU',
+		name: 'Australian Natural',
+		gender: 'Female',
+		accent: 'Australian',
+		flag: '🇦🇺',
+		desc: 'Aksen Australian natural & tempo santai'
+	},
+	{
+		id: 'espeak',
+		name: 'Offline System (Linux)',
+		gender: 'Male',
+		accent: 'Offline',
+		flag: '⚡',
+		desc: 'Sintesis lokal 100% offline via espeak-ng, tanpa kuota internet'
+	}
 ];
 
 class TTSStore {
-	// Engine & Model State
-	engine = $state<'kokoro' | 'system'>('kokoro');
-	modelLoaded = $state(false);
-	loading = $state(false);
-	loadProgress = $state(0);
-	loadStatusText = $state('');
-	error = $state<string | null>(null);
-
 	// Voice & Audio Parameters
-	voice = $state('af_heart');
+	voice = $state('en');
 	speed = $state(1.0);
 
 	// Playback State
@@ -39,20 +55,15 @@ class TTSStore {
 	generating = $state(false);
 	activeSentenceIndex = $state<number | null>(null);
 	sentences = $state<string[]>([]);
+	error = $state<string | null>(null);
 
-	// Internal instances
-	private kokoroInstance: KokoroTTS | null = null;
+	// Audio element & cache
 	private currentAudio: HTMLAudioElement | null = null;
-	private currentUtterance: SpeechSynthesisUtterance | null = null;
 	private audioCache = new Map<string, string>();
 	private playId = 0;
 
 	constructor() {
 		if (typeof window !== 'undefined') {
-			const savedEngine = localStorage.getItem('limusic_tts_engine');
-			if (savedEngine === 'kokoro' || savedEngine === 'system') {
-				this.engine = savedEngine;
-			}
 			const savedVoice = localStorage.getItem('limusic_tts_voice');
 			if (savedVoice) {
 				this.voice = savedVoice;
@@ -67,19 +78,15 @@ class TTSStore {
 		}
 	}
 
-	setEngine(eng: 'kokoro' | 'system') {
-		this.engine = eng;
-		if (typeof window !== 'undefined') {
-			localStorage.setItem('limusic_tts_engine', eng);
-		}
-	}
-
 	setVoice(v: string) {
 		this.voice = v;
 		if (typeof window !== 'undefined') {
 			localStorage.setItem('limusic_tts_voice', v);
 		}
-		// If currently playing, we can continue or keep cache
+		// If currently playing, replay active sentence with new voice
+		if (this.playing && this.activeSentenceIndex !== null) {
+			this.playSentence(this.activeSentenceIndex);
+		}
 	}
 
 	setSpeed(s: number) {
@@ -90,92 +97,22 @@ class TTSStore {
 		if (this.currentAudio) {
 			this.currentAudio.playbackRate = s;
 		}
-		if (this.currentUtterance && this.playing) {
-			// Restart utterance with new speed
-			if (this.activeSentenceIndex !== null) {
-				this.jumpTo(this.activeSentenceIndex);
-			}
-		}
 	}
 
 	/**
-	 * Initialize or download the Kokoro ONNX model on-demand
-	 */
-	async initKokoro(): Promise<boolean> {
-		if (this.kokoroInstance) {
-			this.modelLoaded = true;
-			return true;
-		}
-
-		if (this.loading) return false;
-
-		this.loading = true;
-		this.error = null;
-		this.loadProgress = 0;
-		this.loadStatusText = 'Mempersiapkan model neural Kokoro-82M...';
-
-		try {
-			// Use quantized q8 ONNX weights (~86MB total) with WASM device for universal Linux GTK support
-			const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
-				dtype: 'q8',
-				device: 'wasm',
-				progress_callback: (progress: any) => {
-					if (!progress) return;
-					if (progress.status === 'progress' && progress.total > 0) {
-						const pct = Math.round((progress.loaded / progress.total) * 100);
-						this.loadProgress = pct;
-						const file = progress.file || 'model.onnx';
-						const loadedMb = (progress.loaded / (1024 * 1024)).toFixed(1);
-						const totalMb = (progress.total / (1024 * 1024)).toFixed(1);
-						this.loadStatusText = `Mengunduh ${file} (${loadedMb}/${totalMb} MB)... ${pct}%`;
-					} else if (progress.status === 'initiate') {
-						this.loadStatusText = `Memulai unduhan komponen ${progress.file || ''}...`;
-					} else if (progress.status === 'done') {
-						this.loadStatusText = 'Komponen selesai dimuat.';
-					}
-				}
-			});
-
-			this.kokoroInstance = tts;
-			this.modelLoaded = true;
-			this.loadStatusText = 'Model Kokoro-82M siap digunakan!';
-			return true;
-		} catch (err: any) {
-			console.error('Failed to load Kokoro TTS:', err);
-			this.error = err?.message || 'Gagal memuat model Kokoro TTS. Beralih ke suara sistem.';
-			this.engine = 'system';
-			return false;
-		} finally {
-			this.loading = false;
-		}
-	}
-
-	/**
-	 * Synthesize a single sentence text to a Blob URL
+	 * Synthesize a single sentence text to a base64 audio data URL via Rust backend
 	 */
 	async synthesizeSentence(text: string, voiceId: string): Promise<string> {
 		const clean = text.trim();
-		const cacheKey = `${voiceId}_${clean}`;
+		const cacheKey = `${voiceId}:${clean}`;
 		if (this.audioCache.has(cacheKey)) {
 			return this.audioCache.get(cacheKey)!;
 		}
 
-		if (!this.kokoroInstance) {
-			const ok = await this.initKokoro();
-			if (!ok || !this.kokoroInstance) {
-				throw new Error('Kokoro TTS engine tidak tersedia');
-			}
-		}
-
-		const rawAudio = await this.kokoroInstance.generate(clean, {
-			voice: voiceId as any,
-			speed: 1.0 // apply speed at audio element level for instantaneous speed changes
-		});
-
-		const blob = rawAudio.toBlob();
-		const url = URL.createObjectURL(blob);
-		this.audioCache.set(cacheKey, url);
-		return url;
+		// Calls Tauri Rust backend which fetches natural MP3 or falls back to espeak-ng WAV
+		const dataUrl = await api.synthesizeSpeech(clean, voiceId, this.speed);
+		this.audioCache.set(cacheKey, dataUrl);
+		return dataUrl;
 	}
 
 	/**
@@ -183,7 +120,7 @@ class TTSStore {
 	 */
 	private prefetchNext(index: number) {
 		const nextIndex = index + 1;
-		if (nextIndex < this.sentences.length && this.engine === 'kokoro' && this.kokoroInstance) {
+		if (nextIndex < this.sentences.length) {
 			const nextText = this.sentences[nextIndex];
 			if (nextText && nextText.trim()) {
 				this.synthesizeSentence(nextText, this.voice).catch(() => {});
@@ -197,16 +134,9 @@ class TTSStore {
 	async playArticle(sentences: string[], startIndex: number = 0) {
 		this.stop();
 		this.sentences = sentences;
+		this.error = null;
 		this.playing = true;
 		this.paused = false;
-
-		if (this.engine === 'kokoro' && !this.modelLoaded) {
-			const ok = await this.initKokoro();
-			if (!ok) {
-				// Fallback to system voice if Kokoro fails or is cancelled
-				this.engine = 'system';
-			}
-		}
 
 		await this.playSentence(startIndex);
 	}
@@ -224,6 +154,7 @@ class TTSStore {
 		this.activeSentenceIndex = index;
 		this.playing = true;
 		this.paused = false;
+		this.error = null;
 
 		const text = this.sentences[index];
 		if (!text || !text.trim()) {
@@ -231,78 +162,52 @@ class TTSStore {
 			return this.playSentence(index + 1);
 		}
 
-		if (this.engine === 'kokoro' && this.kokoroInstance) {
-			try {
-				this.generating = true;
-				// Start prefetching next sentence while synthesizing/playing
-				this.prefetchNext(index);
+		try {
+			this.generating = true;
+			// Start prefetching next sentence in background
+			this.prefetchNext(index);
 
-				const audioUrl = await this.synthesizeSentence(text, this.voice);
-				if (this.playId !== thisPlayId) return; // Stale play command
+			const audioUrl = await this.synthesizeSentence(text, this.voice);
+			if (this.playId !== thisPlayId) return; // Stale play command
 
-				this.generating = false;
+			this.generating = false;
 
-				if (this.currentAudio) {
-					this.currentAudio.pause();
-					this.currentAudio = null;
+			if (this.currentAudio) {
+				this.currentAudio.pause();
+				this.currentAudio = null;
+			}
+
+			const audio = new Audio(audioUrl);
+			audio.playbackRate = this.speed;
+			this.currentAudio = audio;
+
+			audio.onended = () => {
+				if (this.playId === thisPlayId && this.playing && !this.paused) {
+					this.playSentence(index + 1);
 				}
+			};
 
-				const audio = new Audio(audioUrl);
-				audio.playbackRate = this.speed;
-				this.currentAudio = audio;
+			audio.onerror = (e) => {
+				console.error('Audio playback error:', e);
+				if (this.playId === thisPlayId) {
+					this.playSentence(index + 1);
+				}
+			};
 
-				audio.onended = () => {
-					if (this.playId === thisPlayId && this.playing && !this.paused) {
-						this.playSentence(index + 1);
-					}
-				};
-
-				audio.onerror = (e) => {
-					console.error('Audio playback error:', e);
+			await audio.play();
+		} catch (err: any) {
+			console.error('TTS synthesis error:', err);
+			this.generating = false;
+			this.error = err?.message || 'Gagal menyuarakan kalimat';
+			if (this.playId === thisPlayId && this.playing && !this.paused) {
+				// Advance to next after short delay
+				setTimeout(() => {
 					if (this.playId === thisPlayId) {
 						this.playSentence(index + 1);
 					}
-				};
-
-				await audio.play();
-			} catch (err: any) {
-				console.error('Kokoro synthesis error, falling back to system:', err);
-				this.generating = false;
-				if (this.playId === thisPlayId) {
-					this.playSystemUtterance(text, index, thisPlayId);
-				}
+				}, 1000);
 			}
-		} else {
-			// System speech synthesis (Web Speech API)
-			this.playSystemUtterance(text, index, thisPlayId);
 		}
-	}
-
-	private playSystemUtterance(text: string, index: number, thisPlayId: number) {
-		if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-			this.stop();
-			return;
-		}
-
-		window.speechSynthesis.cancel();
-		const utter = new SpeechSynthesisUtterance(text);
-		utter.rate = this.speed;
-		utter.lang = this.voice.startsWith('b') ? 'en-GB' : 'en-US';
-
-		utter.onend = () => {
-			if (this.playId === thisPlayId && this.playing && !this.paused) {
-				this.playSentence(index + 1);
-			}
-		};
-
-		utter.onerror = (e) => {
-			if (e.error !== 'canceled' && this.playId === thisPlayId) {
-				this.playSentence(index + 1);
-			}
-		};
-
-		this.currentUtterance = utter;
-		window.speechSynthesis.speak(utter);
 	}
 
 	pause() {
@@ -310,17 +215,12 @@ class TTSStore {
 		if (this.currentAudio) {
 			this.currentAudio.pause();
 		}
-		if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-			window.speechSynthesis.pause();
-		}
 	}
 
 	resume() {
 		this.paused = false;
 		if (this.currentAudio) {
 			this.currentAudio.play().catch(() => {});
-		} else if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-			window.speechSynthesis.resume();
 		} else if (this.activeSentenceIndex !== null) {
 			this.playSentence(this.activeSentenceIndex);
 		}
@@ -337,11 +237,6 @@ class TTSStore {
 			this.currentAudio.pause();
 			this.currentAudio = null;
 		}
-
-		if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-			window.speechSynthesis.cancel();
-		}
-		this.currentUtterance = null;
 	}
 
 	next() {
@@ -367,25 +262,13 @@ class TTSStore {
 		const clean = text.trim();
 		if (!clean) return;
 
-		if (this.engine === 'kokoro' && this.kokoroInstance) {
-			try {
-				const audioUrl = await this.synthesizeSentence(clean, this.voice);
-				const audio = new Audio(audioUrl);
-				audio.playbackRate = this.speed;
-				await audio.play();
-				return;
-			} catch (e) {
-				console.error('Failed to speak single with Kokoro:', e);
-			}
-		}
-
-		// Fallback to system Web Speech API
-		if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-			window.speechSynthesis.cancel();
-			const utter = new SpeechSynthesisUtterance(clean);
-			utter.lang = this.voice.startsWith('b') ? 'en-GB' : 'en-US';
-			utter.rate = this.speed * 0.95;
-			window.speechSynthesis.speak(utter);
+		try {
+			const audioUrl = await this.synthesizeSentence(clean, this.voice);
+			const audio = new Audio(audioUrl);
+			audio.playbackRate = this.speed;
+			await audio.play();
+		} catch (e) {
+			console.error('Failed to speak single word with backend TTS:', e);
 		}
 	}
 }

@@ -6,6 +6,7 @@ pub mod ai;
 mod articles;
 pub mod videos;
 pub mod shadowing;
+pub mod tts;
 mod audioproxy;
 mod blocked;
 mod cipher;
@@ -961,6 +962,7 @@ pub fn run() {
             commands::get_youtube_recommendations,
             commands::get_trending_videos,
             commands::get_shadowing_scenes,
+            commands::synthesize_speech,
             commands::song,
             commands::play,
             commands::play_index,

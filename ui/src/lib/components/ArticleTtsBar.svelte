@@ -10,20 +10,16 @@
 		ArrowReloadHorizontalIcon,
 		VolumeHighIcon,
 		SparklesIcon,
-		CpuIcon,
-		Layers01Icon,
-		Settings02Icon
+		CpuIcon
 	} from '@hugeicons/core-free-icons';
-	import { tts, KOKORO_VOICES, type TTSVoiceOption } from '$lib/tts.svelte';
-	import { Button } from '$lib/components/ui/button';
+	import { tts, TTS_VOICES, type TTSVoiceOption } from '$lib/tts.svelte';
 
 	let { onclose }: { onclose?: () => void } = $props();
 
-	let showSettings = $state(false);
 	let showVoicePicker = $state(false);
 
 	const activeVoiceObj = $derived(
-		KOKORO_VOICES.find((v) => v.id === tts.voice) || KOKORO_VOICES[0]
+		TTS_VOICES.find((v) => v.id === tts.voice) || TTS_VOICES[0]
 	);
 
 	const activeSentenceText = $derived.by(() => {
@@ -51,73 +47,6 @@
 		onclose?.();
 	}
 </script>
-
-<!-- Download & Model Preparation Modal (when Kokoro model is being downloaded) -->
-{#if tts.loading}
-	<div
-		class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
-		transition:fade={{ duration: 150 }}
-	>
-		<div
-			class="w-full max-w-md space-y-4 rounded-2xl border border-border/80 bg-card p-6 shadow-2xl"
-			transition:scale={{ duration: 200, start: 0.95 }}
-		>
-			<div class="flex items-center gap-3">
-				<div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-					<HugeiconsIcon icon={SparklesIcon} size={20} class="animate-pulse" />
-				</div>
-				<div class="min-w-0 flex-1">
-					<h3 class="text-sm font-bold text-foreground">
-						Mengunduh Model Neural Kokoro-82M
-					</h3>
-					<p class="text-xs text-muted-foreground">
-						Format ONNX Quantized (~86MB) • Disimpan lokal secara permanen
-					</p>
-				</div>
-			</div>
-
-			<!-- Live Progress Bar -->
-			<div class="space-y-2">
-				<div class="flex items-center justify-between text-xs">
-					<span class="truncate font-medium text-foreground">{tts.loadStatusText}</span>
-					<span class="font-mono font-bold text-primary">{tts.loadProgress}%</span>
-				</div>
-				<div class="h-2 w-full overflow-hidden rounded-full bg-foreground/10">
-					<div
-						class="h-full rounded-full bg-primary transition-all duration-300"
-						style="width: {Math.max(5, tts.loadProgress)}%"
-					></div>
-				</div>
-			</div>
-
-			<!-- Actions -->
-			<div class="flex items-center justify-between pt-2">
-				<button
-					type="button"
-					onclick={() => {
-						tts.setEngine('system');
-						tts.stop();
-						if (tts.sentences.length > 0) {
-							tts.playSentence(tts.activeSentenceIndex ?? 0);
-						}
-					}}
-					class="text-xs text-muted-foreground transition hover:text-foreground hover:underline cursor-pointer"
-				>
-					Gunakan Suara Sistem Saja (Instan)
-				</button>
-
-				<Button
-					size="sm"
-					variant="outline"
-					onclick={() => tts.stop()}
-					class="rounded-full text-xs"
-				>
-					Batal
-				</Button>
-			</div>
-		</div>
-	</div>
-{/if}
 
 <!-- Floating Article Audio Player Bar -->
 {#if tts.playing || tts.paused || tts.activeSentenceIndex !== null}
@@ -158,23 +87,15 @@
 							Kalimat {(tts.activeSentenceIndex ?? 0) + 1} / {tts.sentences.length}
 						</span>
 
-						<!-- Engine Pill Badge -->
-						<button
-							type="button"
-							onclick={() => tts.setEngine(tts.engine === 'kokoro' ? 'system' : 'kokoro')}
-							class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold transition cursor-pointer {tts.engine === 'kokoro'
-								? 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30'
-								: 'bg-foreground/5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground'}"
-							title="Klik untuk beralih antara Kokoro-82M Studio vs Suara Sistem"
-						>
-							{#if tts.engine === 'kokoro'}
-								<HugeiconsIcon icon={SparklesIcon} size={10} />
-								<span>Kokoro Neural</span>
-							{:else}
-								<HugeiconsIcon icon={CpuIcon} size={10} />
-								<span>Suara Sistem</span>
-							{/if}
-						</button>
+						{#if tts.error}
+							<span class="truncate text-[10px] text-destructive font-medium">
+								⚠️ {tts.error}
+							</span>
+						{:else}
+							<span class="rounded bg-primary/10 border border-primary/20 px-1.5 py-0.5 text-[9px] font-semibold text-primary">
+								{activeVoiceObj.accent} • {activeVoiceObj.flag}
+							</span>
+						{/if}
 					</div>
 
 					<p class="truncate text-xs text-foreground/90 font-medium" title={activeSentenceText}>
@@ -240,7 +161,7 @@
 			<div class="flex items-center justify-end gap-1.5 shrink-0">
 				<!-- Speed Selector Pills -->
 				<div class="inline-flex items-center rounded-full bg-foreground/5 p-0.5 text-[11px]">
-					{#each [0.85, 1.0, 1.15, 1.25] as sp}
+					{#each [0.75, 0.85, 1.0, 1.15, 1.25] as sp}
 						<button
 							type="button"
 							onclick={() => tts.setSpeed(sp)}
@@ -255,65 +176,60 @@
 				</div>
 
 				<!-- Voice Picker Trigger -->
-				{#if tts.engine === 'kokoro'}
-					<div class="relative">
-						<button
-							type="button"
-							onclick={() => (showVoicePicker = !showVoicePicker)}
-							class="inline-flex items-center gap-1 rounded-full bg-foreground/5 px-2 py-1 text-xs font-semibold text-foreground transition hover:bg-foreground/10 cursor-pointer"
-							title="Pilih Suara Kokoro Studio"
+				<div class="relative">
+					<button
+						type="button"
+						onclick={() => (showVoicePicker = !showVoicePicker)}
+						class="inline-flex items-center gap-1 rounded-full bg-foreground/5 px-2.5 py-1 text-xs font-semibold text-foreground transition hover:bg-foreground/10 cursor-pointer"
+						title="Pilih Karakter Suara & Aksen"
+					>
+						<span>{activeVoiceObj.flag}</span>
+						<span class="max-w-[85px] truncate">{activeVoiceObj.name}</span>
+					</button>
+
+					<!-- Voice Dropdown Popover -->
+					{#if showVoicePicker}
+						<div
+							class="absolute bottom-full right-0 mb-2 w-64 overflow-hidden rounded-2xl border border-border bg-card/95 p-2 shadow-2xl backdrop-blur-xl z-50"
+							transition:scale={{ duration: 150, start: 0.95 }}
 						>
-							<span>{activeVoiceObj.flag}</span>
-							<span class="max-w-[70px] truncate">{activeVoiceObj.name}</span>
-						</button>
-
-						<!-- Voice Dropdown Popover -->
-						{#if showVoicePicker}
-							<div
-								class="absolute bottom-full right-0 mb-2 w-64 overflow-hidden rounded-2xl border border-border bg-card/95 p-2 shadow-2xl backdrop-blur-xl"
-								transition:scale={{ duration: 150, start: 0.95 }}
-							>
-								<div class="border-b border-border/50 px-2.5 py-1.5">
-									<span class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-										Pilihan Suara Kokoro Neural
-									</span>
-								</div>
-
-								<div class="max-h-56 overflow-y-auto space-y-1 py-1">
-									{#each KOKORO_VOICES as vc}
-										<button
-											type="button"
-											onclick={() => {
-												tts.setVoice(vc.id);
-												showVoicePicker = false;
-												if (tts.activeSentenceIndex !== null) {
-													tts.playSentence(tts.activeSentenceIndex);
-												}
-											}}
-											class="flex w-full items-center justify-between rounded-xl px-2.5 py-1.5 text-left transition cursor-pointer {tts.voice === vc.id
-												? 'bg-primary/15 text-primary font-semibold'
-												: 'text-foreground/90 hover:bg-foreground/5'}"
-										>
-											<div class="flex items-center gap-2 min-w-0">
-												<span class="text-base">{vc.flag}</span>
-												<div class="min-w-0">
-													<div class="flex items-center gap-1.5">
-														<span class="text-xs font-semibold">{vc.name}</span>
-														<span class="text-[10px] text-muted-foreground">({vc.gender})</span>
-													</div>
-													<p class="text-[10px] text-muted-foreground truncate max-w-[150px]">{vc.desc}</p>
-												</div>
-											</div>
-											{#if tts.voice === vc.id}
-												<span class="text-xs text-primary font-bold">✓</span>
-											{/if}
-										</button>
-									{/each}
-								</div>
+							<div class="border-b border-border/50 px-2.5 py-1.5">
+								<span class="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+									Pilihan Suara & Aksen
+								</span>
 							</div>
-						{/if}
-					</div>
-				{/if}
+
+							<div class="max-h-56 overflow-y-auto space-y-1 py-1">
+								{#each TTS_VOICES as vc}
+									<button
+										type="button"
+										onclick={() => {
+											tts.setVoice(vc.id);
+											showVoicePicker = false;
+										}}
+										class="flex w-full items-center justify-between rounded-xl px-2.5 py-1.5 text-left transition cursor-pointer {tts.voice === vc.id
+											? 'bg-primary/15 text-primary font-semibold'
+											: 'text-foreground/90 hover:bg-foreground/5'}"
+									>
+										<div class="flex items-center gap-2 min-w-0">
+											<span class="text-base">{vc.flag}</span>
+											<div class="min-w-0">
+												<div class="flex items-center gap-1.5">
+													<span class="text-xs font-semibold">{vc.name}</span>
+													<span class="text-[10px] text-muted-foreground">({vc.accent})</span>
+												</div>
+												<p class="text-[10px] text-muted-foreground truncate max-w-[155px]">{vc.desc}</p>
+											</div>
+										</div>
+										{#if tts.voice === vc.id}
+											<span class="text-xs text-primary font-bold">✓</span>
+										{/if}
+									</button>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				</div>
 
 				<!-- Close Button -->
 				<button

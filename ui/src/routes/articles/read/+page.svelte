@@ -405,14 +405,14 @@
 				}}
 				class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition shadow-xs cursor-pointer {tts.playing && !tts.paused
 					? 'bg-primary text-primary-foreground shadow-sm'
-					: tts.loading
+					: tts.generating
 						? 'bg-primary/20 text-primary animate-pulse'
 						: 'bg-primary/15 text-primary hover:bg-primary/25'}"
-				title="Dengarkan artikel dibacakan dengan suara studio alami Kokoro-82M"
+				title="Dengarkan artikel dibacakan dengan suara alami"
 			>
-				{#if tts.loading}
+				{#if tts.generating}
 					<HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={13} class="animate-spin" />
-					<span>Memuat Kokoro...</span>
+					<span>Memproses Suara...</span>
 				{:else if tts.playing && !tts.paused}
 					<HugeiconsIcon icon={PauseIcon} size={13} />
 					<span>Jeda Suara</span>
