@@ -31,6 +31,13 @@
 	let selectedAiContext = $state<string | null>(null);
 	let selectedAiAnchorRect = $state<DOMRect | null>(null);
 
+	// Memoized comprehension and vocabulary stats computed only when transcript changes
+	let textStats = $derived.by(() => {
+		if (!transcript?.lines || transcript.lines.length === 0) return null;
+		const allText = transcript.lines.map((l) => l.text).join(' ');
+		return vocab.computeTextStats(allText);
+	});
+
 	async function fetchTranscript(videoId: string) {
 		if (!videoId) return;
 
@@ -248,22 +255,20 @@
 			{/if}
 		</div>
 
-		{#if transcript?.lines && transcript.lines.length > 0}
-			{@const allText = transcript.lines.map((l) => l.text).join(' ')}
-			{@const stats = vocab.computeTextStats(allText)}
+		{#if textStats}
 			<div class="flex items-center gap-2">
 				<span
-					class="rounded px-2 py-0.5 text-[10px] font-bold {stats.comprehensionPct >= 80
+					class="rounded px-2 py-0.5 text-[10px] font-bold {textStats.comprehensionPct >= 80
 						? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
-						: stats.comprehensionPct >= 60
+						: textStats.comprehensionPct >= 60
 							? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30'
 							: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30'}"
-					title="{stats.knownWords} dari {stats.totalWords} kata dalam transkrip sudah Anda kuasai"
+					title="{textStats.knownWords} dari {textStats.totalWords} kata dalam transkrip sudah Anda kuasai"
 				>
-					{stats.comprehensionPct}% Comprehension
+					{textStats.comprehensionPct}% Comprehension
 				</span>
 				<span class="rounded bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 text-[10px] font-medium text-rose-500 dark:text-rose-400">
-					{stats.newWordsCount} Kata Baru
+					{textStats.newWordsCount} Kata Baru
 				</span>
 			</div>
 		{:else if transcript?.source}

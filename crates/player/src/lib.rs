@@ -213,10 +213,8 @@ fn new_mpv(cache_dir: &str) -> Result<Mpv, Error> {
     for (key, value) in [
         ("vo", "libmpv"),
         ("profile", "fast"),
-        ("hwdec", "auto-safe"),
-        ("hwdec-codecs", "all"),
-        ("video-sync", "audio"),
-        ("framedrop", "vo"),
+        ("hwdec", "vaapi"),
+        ("hwdec-codecs", "h264"),
         ("vd-lavc-fast", "yes"),
         ("video-timing-offset", "0"),
         ("osd-level", "0"),

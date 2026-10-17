@@ -284,7 +284,7 @@
 							if (remaining <= 0) {
 								clearInterval(autoTimerInterval);
 							}
-						}, 100);
+						}, 250);
 
 						autoTimerTimeout = setTimeout(() => {
 							clearInterval(autoTimerInterval);
