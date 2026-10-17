@@ -1472,4 +1472,8 @@ export const getYoutubeRecommendations = () =>
 export const getTrendingVideos = (category: string) =>
 	invoke<SongItem[]>('get_trending_videos', { category });
 
+export const getShadowingScenes = (category: string, query?: string) =>
+	invoke<SongItem[]>('get_shadowing_scenes', { category, query: query || null });
+
+
 

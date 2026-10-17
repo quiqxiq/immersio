@@ -76,6 +76,17 @@ pub async fn get_trending_videos(state: St<'_>, category: String) -> Result<Vec<
     crate::videos::get_trending_videos(&category, &state.it, client).await
 }
 
+/// Fetch movie and drama scenes (<10 mins) for language shadowing
+#[tauri::command]
+pub async fn get_shadowing_scenes(
+    state: St<'_>,
+    category: String,
+    query: Option<String>,
+) -> Result<Vec<SongItem>, String> {
+    let client = metadata_client(&state)?;
+    crate::shadowing::get_shadowing_scenes(&category, query.as_deref(), &state.it, client).await
+}
+
 /// Fetch curated articles feed in native Rust
 #[tauri::command]
 pub async fn get_articles_feed(source: Option<String>) -> Result<Vec<crate::articles::ArticleCard>, String> {

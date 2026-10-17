@@ -2,7 +2,7 @@
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import { SubtitleIcon } from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
-	import { playback } from '$lib/player.svelte';
+	import { playback, videoTranscript } from '$lib/player.svelte';
 	import WordPopup from '$lib/components/WordPopup.svelte';
 	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
 	import { vocab } from '$lib/vocab.svelte';
@@ -27,8 +27,11 @@
 
 	async function fetchTranscript(videoId: string) {
 		loading = true;
+		videoTranscript.loading = true;
 		transcript = null;
+		videoTranscript.lines = [];
 		activeIndex = -1;
+		videoTranscript.activeIndex = -1;
 		userScrolled = false;
 		try {
 			let res: api.Lyrics | null = null;
@@ -57,11 +60,15 @@
 				});
 			}
 			transcript = res;
+			videoTranscript.lines = res?.lines || [];
+			videoTranscript.source = res?.source || '';
 		} catch (e) {
 			console.error('Error fetching video transcript:', e);
 			transcript = null;
+			videoTranscript.lines = [];
 		} finally {
 			loading = false;
+			videoTranscript.loading = false;
 		}
 	}
 
@@ -70,6 +77,7 @@
 		const posMs = playback.position * 1000;
 		if (!transcript || !transcript.lines || transcript.lines.length === 0) {
 			activeIndex = -1;
+			videoTranscript.activeIndex = -1;
 			return;
 		}
 
@@ -86,6 +94,7 @@
 
 		if (found !== activeIndex) {
 			activeIndex = found;
+			videoTranscript.activeIndex = found;
 			if (!userScrolled && found >= 0 && scroller) {
 				const el = scroller.querySelector(`[data-index="${found}"]`) as HTMLElement;
 				if (el) {

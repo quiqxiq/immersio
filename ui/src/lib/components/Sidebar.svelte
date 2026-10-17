@@ -19,6 +19,7 @@
 		SquareArrowRight01Icon,
 		SpotifyIcon,
 		Video01Icon,
+		Film02Icon,
 		News01Icon
 	} from '@hugeicons/core-free-icons';
 	import { toggleMode } from 'mode-watcher';
@@ -34,6 +35,7 @@
 	const nav = $derived([
 		{ href: '/', label: t('nav.home'), icon: Home01Icon },
 		{ href: '/videos', label: 'Videos', icon: Video01Icon },
+		{ href: '/shadowing', label: 'Shadowing', icon: Film02Icon },
 		{ href: '/articles', label: 'Artikel', icon: News01Icon },
 		{ href: '/search', label: t('nav.search'), icon: Search01Icon },
 		{ href: '/library', label: t('nav.library'), icon: LibraryIcon }

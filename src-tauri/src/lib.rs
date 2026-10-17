@@ -5,6 +5,7 @@ mod anki;
 pub mod ai;
 mod articles;
 pub mod videos;
+pub mod shadowing;
 mod audioproxy;
 mod blocked;
 mod cipher;
@@ -951,6 +952,7 @@ pub fn run() {
             commands::get_channel_videos,
             commands::get_youtube_recommendations,
             commands::get_trending_videos,
+            commands::get_shadowing_scenes,
             commands::song,
             commands::play,
             commands::play_index,

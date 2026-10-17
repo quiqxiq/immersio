@@ -7,6 +7,7 @@ import type {
 	Account,
 	AccountIdentity,
 	BrowseItem,
+	LyricLine,
 	NowPlaying,
 	QueueState,
 	Rating,
@@ -49,6 +50,31 @@ export const playback = $state({
  * gapless advance looks exactly like a user play from the `now-playing` event alone.
  */
 export const np = $state({ open: false, tab: 'queue' as 'queue' | 'lyrics' | 'comments' });
+
+/**
+ * Movie Scene Shadowing state (Immersio language immersion suite).
+ * Manages sentence-by-sentence auto-pause, playback mode, and replay state.
+ */
+export const shadowing = $state({
+	active: false,
+	autoPause: true,
+	pauseMode: 'manual' as 'manual' | 'timer',
+	timerSeconds: 3,
+	lastPausedIndex: -1,
+	isWaiting: false
+});
+
+/**
+ * Shared video transcript state for interactive subtitles & shadowing.
+ */
+export const videoTranscript = $state({
+	lines: [] as LyricLine[],
+	source: '',
+	loading: false,
+	activeIndex: -1
+});
+
+
 
 /**
  * Backend settings the app has to know outside the settings modal (which holds the rest in its own
