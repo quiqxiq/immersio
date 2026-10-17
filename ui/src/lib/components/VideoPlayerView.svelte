@@ -98,7 +98,7 @@
 
 		const lines = videoTranscript.lines;
 		const idx = videoTranscript.activeIndex >= 0 ? videoTranscript.activeIndex : 0;
-		if (idx >= 0 && idx < lines.length) {
+		if (lines && lines.length > 0 && idx >= 0 && idx < lines.length) {
 			const startMs = lines[idx].time_ms ?? 0;
 			api.seek(Math.max(0, startMs / 1000));
 			shadowing.lastPausedSentenceId = -1;
@@ -260,8 +260,12 @@
 		// 1. Primary: Use full reconstructed sentences
 		if (sentences && sentences.length > 0 && sIdx >= 0 && sIdx < sentences.length) {
 			const curSentence = sentences[sIdx];
-			const endMs = curSentence.end_ms;
+			// Do not pause on micro-utterances / interjections (<= 2 words like "Okay.", "Yeah.", "- Mm-hmm.")
+			if (curSentence.skip_pause || curSentence.word_count <= 2) {
+				return;
+			}
 
+			const endMs = curSentence.end_ms;
 			if (posMs >= endMs - 120 && posMs <= endMs + 800) {
 				if (!playback.paused && shadowing.lastPausedSentenceId !== curSentence.id) {
 					shadowing.lastPausedSentenceId = curSentence.id;
@@ -284,7 +288,7 @@
 							if (remaining <= 0) {
 								clearInterval(autoTimerInterval);
 							}
-						}, 250);
+						}, 200);
 
 						autoTimerTimeout = setTimeout(() => {
 							clearInterval(autoTimerInterval);
@@ -301,15 +305,19 @@
 		// 2. Fallback: Raw subtitle lines if sentences are not ready
 		const lines = videoTranscript.lines;
 		const idx = videoTranscript.activeIndex;
-		if (idx < 0 || idx >= lines.length) return;
+		if (!lines || lines.length === 0 || idx < 0 || idx >= lines.length) return;
 
 		const curLine = lines[idx];
+		const wordsCount = curLine.text.split(/\s+/).filter(Boolean).length;
+		if (wordsCount <= 2) return;
+
+		const startMs = curLine.time_ms ?? 0;
 		let endMs: number = curLine.end_time_ms ?? 0;
-		if (endMs <= (curLine.time_ms ?? 0)) {
-			if (idx + 1 < lines.length && lines[idx + 1].time_ms) {
+		if (endMs <= startMs) {
+			if (idx + 1 < lines.length && lines[idx + 1].time_ms != null) {
 				endMs = lines[idx + 1].time_ms!;
 			} else {
-				endMs = (curLine.time_ms ?? 0) + 3800;
+				endMs = startMs + 3500;
 			}
 		}
 
@@ -321,10 +329,24 @@
 
 				if (shadowing.pauseMode === 'timer') {
 					clearShadowTimer();
-					const totalPause = 3500;
+					const cueDuration = Math.max(1200, endMs - startMs);
+					const suggestedPause = Math.max(2200, Math.min(8000, Math.round(cueDuration * 1.2)));
+					const totalPause = Math.round(suggestedPause * (shadowing.paceMultiplier || 1.0));
 					shadowing.pauseTotalMs = totalPause;
 					shadowing.pauseRemainingMs = totalPause;
+
+					const startTick = Date.now();
+					autoTimerInterval = setInterval(() => {
+						const elapsed = Date.now() - startTick;
+						const remaining = Math.max(0, totalPause - elapsed);
+						shadowing.pauseRemainingMs = remaining;
+						if (remaining <= 0) {
+							clearInterval(autoTimerInterval);
+						}
+					}, 200);
+
 					autoTimerTimeout = setTimeout(() => {
+						clearInterval(autoTimerInterval);
 						if (shadowing.isWaiting && playback.paused) {
 							resumeNext();
 						}

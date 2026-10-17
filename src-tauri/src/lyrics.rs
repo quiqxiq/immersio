@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 
-/// How long a cached "no lyrics found" verdict suppresses refetching.
-const MISS_TTL_SECS: i64 = 24 * 3600;
+/// How long a cached "no lyrics found" verdict suppresses refetching (2 minutes, avoiding long poisoning on network drops).
+const MISS_TTL_SECS: i64 = 120;
 
 const LRCLIB_ROOT: &str = "https://lrclib.net/api";
 
@@ -136,6 +136,8 @@ pub struct LyricSentence {
     pub duration_ms: u64,
     pub word_count: usize,
     pub suggested_pause_ms: u64,
+    #[serde(default)]
+    pub skip_pause: bool,
 }
 
 /// What the UI gets (and what `lyrics_cache` stores as JSON).
@@ -430,7 +432,7 @@ fn unescape_xml_entities(input: &str) -> String {
 /// 1. `<p t="ms" d="ms">...</p>` (`srv1`, `srv3`, timedtext format 3) with arbitrary attribute order and child tags.
 /// 2. `<text start="sec" dur="sec">...</text>` (standard timedtext format) with fractional seconds and child tags.
 pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
-    let mut lines = Vec::new();
+    let mut lines: Vec<LyricLine> = Vec::new();
     static RE_TAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re_tags = RE_TAGS.get_or_init(|| regex::Regex::new(r#"<[^>]+>"#).unwrap());
 
@@ -443,6 +445,9 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
     static RE_D_ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re_d = RE_D_ATTR.get_or_init(|| regex::Regex::new(r#"\bd="(\d+)""#).unwrap());
 
+    static RE_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r#"\s+"#).unwrap());
+
     for cap in re_p.captures_iter(xml) {
         let attrs = cap.get(1).map_or("", |m| m.as_str());
         let body = cap.get(2).map_or("", |m| m.as_str());
@@ -454,12 +459,21 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
                     .and_then(|c| c.get(1))
                     .and_then(|d| d.as_str().parse::<u64>().ok());
 
-                let stripped = re_tags.replace_all(body, "");
+                let stripped = re_tags.replace_all(body, " ");
                 let unescaped = unescape_xml_entities(&stripped);
-                let text = unescaped.trim();
-                if !text.is_empty() && text != "\n" {
-                    let mut line = LyricLine::simple(Some(ms), text.to_string());
-                    line.end_time_ms = duration_opt.map(|d| ms + d);
+                let text = re_spaces.replace_all(unescaped.trim(), " ").to_string();
+                if !text.is_empty() {
+                    let end_time = duration_opt.map(|d| ms + d);
+                    if let Some(last_line) = lines.last_mut() {
+                        if last_line.text == text {
+                            if end_time > last_line.end_time_ms {
+                                last_line.end_time_ms = end_time;
+                            }
+                            continue;
+                        }
+                    }
+                    let mut line = LyricLine::simple(Some(ms), text);
+                    line.end_time_ms = end_time;
                     lines.push(line);
                 }
             }
@@ -493,12 +507,21 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
                     .and_then(|d| d.as_str().parse::<f64>().ok())
                     .map(|d_secs| (d_secs * 1000.0).round() as u64);
 
-                let stripped = re_tags.replace_all(body, "");
+                let stripped = re_tags.replace_all(body, " ");
                 let unescaped = unescape_xml_entities(&stripped);
-                let text = unescaped.trim();
-                if !text.is_empty() && text != "\n" {
-                    let mut line = LyricLine::simple(Some(ms), text.to_string());
-                    line.end_time_ms = duration_opt.map(|d| ms + d);
+                let text = re_spaces.replace_all(unescaped.trim(), " ").to_string();
+                if !text.is_empty() {
+                    let end_time = duration_opt.map(|d| ms + d);
+                    if let Some(last_line) = lines.last_mut() {
+                        if last_line.text == text {
+                            if end_time > last_line.end_time_ms {
+                                last_line.end_time_ms = end_time;
+                            }
+                            continue;
+                        }
+                    }
+                    let mut line = LyricLine::simple(Some(ms), text);
+                    line.end_time_ms = end_time;
                     lines.push(line);
                 }
             }
@@ -512,7 +535,7 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
 fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
     // Try parsing as json3 first
     if let Ok(events) = serde_json::from_str::<CaptionEvents>(body_text) {
-        let mut lines = Vec::new();
+        let mut lines: Vec<LyricLine> = Vec::new();
         for ev in events.events {
             let line_start = ev.start_ms;
             let line_duration = ev.duration_ms;
@@ -529,8 +552,18 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
                     full_text.push_str(utf8);
                 }
             }
-            let text = full_text.trim();
-            if !text.is_empty() && text != "\n" {
+            static RE_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r#"\s+"#).unwrap());
+            let text = re_spaces.replace_all(full_text.trim(), " ").to_string();
+            if !text.is_empty() {
+                if let Some(last_line) = lines.last_mut() {
+                    if last_line.text == text {
+                        if line_end > last_line.end_time_ms {
+                            last_line.end_time_ms = line_end;
+                        }
+                        continue;
+                    }
+                }
                 if let Some(base_ms) = line_start {
                     for s in &ev.segs {
                         if let Some(utf8) = &s.utf8 {
@@ -548,9 +581,10 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
                     }
                 }
 
-                let mut line = LyricLine::simple(line_start, text.to_owned());
+                let mut line = LyricLine::simple(line_start, text);
                 line.end_time_ms = line_end;
-                if !words.is_empty() {
+                // Only assign word-level timings if segments are actual individual words without spaces
+                if !words.is_empty() && !words.iter().any(|w| w.text.contains(' ')) {
                     line.words = Some(words);
                 }
                 lines.push(line);
@@ -596,24 +630,39 @@ async fn fetch_caption_body(caption_url: &str) -> Option<String> {
     };
 
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(6))
         .build()
         .unwrap_or_else(|_| crate::http::client().clone());
 
-    if let Ok(r) = http.get(&json_url).send().await {
-        if let Ok(txt) = r.text().await {
-            if !txt.trim().is_empty() {
-                return Some(txt);
+    let try_fetch = |url: &str| {
+        let http = http.clone();
+        let url = url.to_owned();
+        async move {
+            let resp = http
+                .get(&url)
+                .header(reqwest::header::USER_AGENT, crate::http::WEB_UA)
+                .header(reqwest::header::REFERER, "https://www.youtube.com/")
+                .send()
+                .await
+                .ok()?;
+            if !resp.status().is_success() {
+                return None;
             }
+            let txt = resp.text().await.ok()?;
+            let trimmed = txt.trim();
+            if trimmed.is_empty() || trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<html") {
+                return None;
+            }
+            Some(txt)
         }
+    };
+
+    if let Some(txt) = try_fetch(&json_url).await {
+        return Some(txt);
     }
 
-    if let Ok(r) = http.get(caption_url).send().await {
-        if let Ok(txt) = r.text().await {
-            if !txt.trim().is_empty() {
-                return Some(txt);
-            }
-        }
+    if let Some(txt) = try_fetch(caption_url).await {
+        return Some(txt);
     }
 
     None
@@ -650,21 +699,24 @@ async fn youtube_get(
     }
 
     // 2. Next, check Closed Captions (subtitles) from YouTube player endpoint.
-    // Try ANDROID_VR first (which reliably returns full captions for YouTube videos),
-    // and fallback to WEB_REMIX, VISIONOS, and TVHTML5_SIMPLY.
+    // Query active clients: VISIONOS and TVHTML5_SIMPLY, then WEB_REMIX.
     let caption_clients = [
-        "ANDROID_VR_1_65_10",
-        "ANDROID_VR_1_43_32",
-        innertube::MAIN_CLIENT,
         "VISIONOS",
         "TVHTML5_SIMPLY",
+        innertube::MAIN_CLIENT,
     ];
     for client_key in caption_clients {
         if let Some(client) = state.clients.get(client_key) {
             if let Ok(resp) = state.it.player(client, &req.video_id, None, None, None).await {
                 if let Some(captions) = &resp.captions {
                     if let Some((caption_url, label)) = captions.best_caption() {
-                        if let Some(body_text) = fetch_caption_body(&caption_url).await {
+                        let mut body_text = fetch_caption_body(&caption_url).await;
+                        // If auto-translation failed (&tlang=en), fallback to the original native caption track URL
+                        if body_text.is_none() && caption_url.contains("&tlang=") {
+                            let clean_url = caption_url.split("&tlang=").next().unwrap_or(&caption_url);
+                            body_text = fetch_caption_body(clean_url).await;
+                        }
+                        if let Some(body_text) = body_text {
                             if let Some(lyrics) = parse_caption_body(&body_text, &label) {
                                 return Ok(Some(lyrics));
                             }
@@ -1830,13 +1882,6 @@ fn strip_xml_tags(s: &str) -> String {
     out
 }
 
-#[derive(Debug, Clone)]
-struct WordToken {
-    text: String,
-    start_ms: u64,
-    end_ms: u64,
-}
-
 /// Check if a word represents an abbreviation (e.g. Mr., Dr., U.S., etc.) rather than a sentence end
 fn is_abbreviation(word: &str) -> bool {
     let clean = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ')' || c == ']' || c == '“' || c == '”' || c == '‘' || c == '’');
@@ -1876,127 +1921,93 @@ pub fn calculate_suggested_pause(duration_ms: u64, word_count: usize) -> u64 {
     base.clamp(1800, 12000)
 }
 
-/// Reconstruct full grammatical sentences from raw subtitle cues with accurate time boundaries
+/// Reconstruct full grammatical sentences from raw subtitle cues with natural boundaries
 pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
     if lines.is_empty() {
         return Vec::new();
     }
 
-    // 1. Flatten all lines into a stream of timestamped word tokens
-    let mut words: Vec<WordToken> = Vec::new();
-
-    for (line_idx, line) in lines.iter().enumerate() {
-        let line_text = line.text.trim();
-        if line_text.is_empty() {
-            continue;
-        }
-
-        let start_ms = line.time_ms.unwrap_or(0);
-        let end_ms = line.end_time_ms.unwrap_or_else(|| {
-            if line_idx + 1 < lines.len() && lines[line_idx + 1].time_ms.is_some() {
-                lines[line_idx + 1].time_ms.unwrap()
-            } else {
-                start_ms + (line_text.split_whitespace().count() as u64 * 380).max(1500)
-            }
-        });
-
-        if let Some(line_words) = &line.words {
-            if !line_words.is_empty() {
-                for lw in line_words {
-                    words.push(WordToken {
-                        text: lw.text.clone(),
-                        start_ms: lw.start_ms,
-                        end_ms: lw.end_ms,
-                    });
-                }
-                continue;
-            }
-        }
-
-        // Interpolate word timestamps across line duration
-        let line_word_tokens: Vec<&str> = line_text.split_whitespace().collect();
-        let total_words = line_word_tokens.len();
-        if total_words == 0 {
-            continue;
-        }
-
-        let total_duration = end_ms.saturating_sub(start_ms).max(total_words as u64 * 200);
-        let duration_per_word = total_duration / total_words as u64;
-
-        for (w_idx, w_str) in line_word_tokens.into_iter().enumerate() {
-            let w_start = start_ms + (w_idx as u64 * duration_per_word);
-            let w_end = if w_idx + 1 == total_words {
-                end_ms
-            } else {
-                w_start + duration_per_word
-            };
-            words.push(WordToken {
-                text: w_str.to_string(),
-                start_ms: w_start,
-                end_ms: w_end,
-            });
-        }
-    }
-
-    if words.is_empty() {
-        return Vec::new();
-    }
-
-    // 2. Segment words into complete grammatical sentences
     let mut sentences: Vec<LyricSentence> = Vec::new();
-    let mut current_words: Vec<WordToken> = Vec::new();
+    let mut cur_text = String::new();
+    let mut cur_start_ms = 0u64;
+    let mut cur_end_ms = 0u64;
+    let mut is_first_in_chunk = true;
 
-    let total_words = words.len();
-    for i in 0..total_words {
-        let word = &words[i];
-        current_words.push(word.clone());
+    for (i, line) in lines.iter().enumerate() {
+        let text = line.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let start_ms = line.time_ms.unwrap_or(0);
+        let end_ms = line.end_time_ms.unwrap_or(start_ms + 2500);
 
-        let is_last_word = i + 1 == total_words;
-        let mut should_break = is_last_word;
+        if is_first_in_chunk {
+            cur_start_ms = start_ms;
+            cur_end_ms = end_ms;
+            cur_text = text.to_string();
+            is_first_in_chunk = false;
+        } else {
+            cur_text.push(' ');
+            cur_text.push_str(text);
+            if end_ms > cur_end_ms {
+                cur_end_ms = end_ms;
+            }
+        }
+
+        let is_last_line = i + 1 == lines.len();
+        let mut should_break = is_last_line;
 
         if !should_break {
-            let next_word = &words[i + 1];
+            let next_line = &lines[i + 1];
+            let next_start = next_line.time_ms.unwrap_or(cur_end_ms);
+            let next_text = next_line.text.trim();
+            let gap_ms = next_start.saturating_sub(cur_end_ms);
 
-            // Condition A: Terminal punctuation (. ? !)
-            if ends_with_sentence_terminator(&word.text) {
-                should_break = true;
-            }
-            // Condition B: Silence gap between speakers/sentences (>= 1200ms)
-            else if next_word.start_ms >= word.end_ms + 1200 {
-                should_break = true;
-            }
-            // Condition C: Length safeguard (>= 22 words and ends with comma or clause)
-            else if current_words.len() >= 22 && (word.text.ends_with(',') || word.text.ends_with(';') || word.text.ends_with('-')) {
-                should_break = true;
+            let last_token = cur_text.split_whitespace().last().unwrap_or("");
+            let has_terminal = ends_with_sentence_terminator(last_token);
+            let words_count = cur_text.split_whitespace().count();
+            let next_words_count = next_text.split_whitespace().count();
+
+            if has_terminal {
+                // If it's a micro-utterance (<= 2 words, e.g. "- Okay.", "I sang,") and next speech is close (< 1000ms), absorb
+                if words_count <= 2 && gap_ms < 1000 && !next_text.starts_with('-') {
+                    should_break = false;
+                }
+                // If both current and next are very short sentences (< 800ms gap, same speaker, e.g. "Well, scientifically, I do." + "We all do.")
+                else if words_count <= 4 && next_words_count <= 4 && gap_ms < 800 && !next_text.starts_with('-') {
+                    should_break = false;
+                } else {
+                    should_break = true;
+                }
+            } else {
+                // Non-terminal: break only on long silence gap, speaker change, or sentence length limit
+                if gap_ms >= 1200 || next_text.starts_with("- ") || words_count >= 24 {
+                    should_break = true;
+                } else {
+                    should_break = false;
+                }
             }
         }
 
-        if should_break && !current_words.is_empty() {
-            let first_w = current_words.first().unwrap();
-            let last_w = current_words.last().unwrap();
-            let sentence_text = current_words
-                .iter()
-                .map(|w| w.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            let start_ms = first_w.start_ms;
-            let end_ms = last_w.end_ms;
-            let duration_ms = end_ms.saturating_sub(start_ms);
-            let word_count = current_words.len();
+        if should_break {
+            let word_count = cur_text.split_whitespace().count();
+            let duration_ms = cur_end_ms.saturating_sub(cur_start_ms);
             let suggested_pause_ms = calculate_suggested_pause(duration_ms, word_count);
+            let skip_pause = word_count <= 2;
 
             sentences.push(LyricSentence {
                 id: sentences.len(),
-                text: sentence_text,
-                start_ms,
-                end_ms,
+                text: cur_text.clone(),
+                start_ms: cur_start_ms,
+                end_ms: cur_end_ms,
                 duration_ms,
                 word_count,
                 suggested_pause_ms,
+                skip_pause,
             });
 
-            current_words.clear();
+            is_first_in_chunk = true;
+            cur_text.clear();
         }
     }
 

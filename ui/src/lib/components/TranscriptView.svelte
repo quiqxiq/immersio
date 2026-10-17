@@ -18,7 +18,6 @@
 	let scroller = $state<HTMLElement | null>(null);
 	let userScrolled = $state(false);
 	let scrollTimeout: any = null;
-	let viewMode = $state<'sentence' | 'raw'>('sentence');
 	let lastLoadedVideoId = '';
 
 	// Selected word popup state for dictionary lookups
@@ -140,35 +139,36 @@
 			}
 		}
 
-		// Also update active sentence index
-		const sentences = videoTranscript.sentences;
-		let foundSentence = -1;
-		if (sentences && sentences.length > 0) {
-			for (let s = 0; s < sentences.length; s++) {
-				const st = sentences[s];
-				if (posMs >= st.start_ms && posMs < st.end_ms + 100) {
-					foundSentence = s;
-					break;
-				} else if (posMs >= st.start_ms) {
-					foundSentence = s;
+		// Also update active sentence index, but lock it while waiting in shadowing mode
+		if (!shadowing.isWaiting) {
+			const sentences = videoTranscript.sentences;
+			let foundSentence = -1;
+			if (sentences && sentences.length > 0) {
+				for (let s = 0; s < sentences.length; s++) {
+					const st = sentences[s];
+					if (posMs >= st.start_ms && posMs < st.end_ms + 100) {
+						foundSentence = s;
+						break;
+					} else if (posMs >= st.start_ms) {
+						foundSentence = s;
+					}
 				}
 			}
-		}
 
-		// Only mutate if index changed to avoid thrashing Svelte's reactive graph
-		if (videoTranscript.activeSentenceIndex !== foundSentence) {
-			videoTranscript.activeSentenceIndex = foundSentence;
+			// Only mutate if index changed to avoid thrashing Svelte's reactive graph
+			if (videoTranscript.activeSentenceIndex !== foundSentence) {
+				videoTranscript.activeSentenceIndex = foundSentence;
+			}
 		}
 
 		if (found !== activeIndex) {
 			activeIndex = found;
 			videoTranscript.activeIndex = found;
-			// Strictly prevent auto-scrolling when in Shadowing mode or when paused.
-			// Only scroll the local container itself (never window or outer document).
-			if (!shadowing.active && !playback.paused && !userScrolled && found >= 0 && scroller) {
+			// Smoothly center the active subtitle cue in the transcript list
+			if (!userScrolled && found >= 0 && scroller) {
 				const el = scroller.querySelector(`[data-index="${found}"]`) as HTMLElement;
 				if (el) {
-					const targetTop = el.offsetTop - scroller.clientHeight / 2;
+					const targetTop = el.offsetTop - scroller.clientHeight / 2 + el.clientHeight / 2;
 					scroller.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
 				}
 			}
@@ -220,39 +220,11 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-card">
-	<!-- Minimalist Top Bar with Sentence vs Raw Subtitle Mode Toggle -->
+	<!-- Minimalist Top Bar -->
 	<div class="flex items-center justify-between border-b border-border/60 px-6 py-3 flex-wrap gap-2">
-		<div class="flex items-center gap-3">
-			<div class="flex items-center gap-2 text-foreground">
-				<HugeiconsIcon icon={SubtitleIcon} class="h-4 w-4 text-primary" />
-				<span class="text-xs font-semibold tracking-wider uppercase text-muted-foreground">Transkrip Video</span>
-			</div>
-
-			<!-- View Mode Toggle Pills -->
-			{#if videoTranscript.sentences && videoTranscript.sentences.length > 0}
-				<div class="inline-flex items-center rounded-lg bg-foreground/5 p-0.5 border border-border/40 text-[10px]">
-					<button
-						type="button"
-						onclick={() => (viewMode = 'sentence')}
-						class="rounded px-2 py-0.5 font-semibold transition cursor-pointer {viewMode === 'sentence'
-							? 'bg-primary text-primary-foreground shadow-xs'
-							: 'text-muted-foreground hover:text-foreground'}"
-						title="Mode Kalimat Utuh (Rekomendasi Shadowing)"
-					>
-						Kalimat Utuh
-					</button>
-					<button
-						type="button"
-						onclick={() => (viewMode = 'raw')}
-						class="rounded px-2 py-0.5 font-semibold transition cursor-pointer {viewMode === 'raw'
-							? 'bg-primary text-primary-foreground shadow-xs'
-							: 'text-muted-foreground hover:text-foreground'}"
-						title="Mode Baris Subtitle YouTube"
-					>
-						Baris Subtitle
-					</button>
-				</div>
-			{/if}
+		<div class="flex items-center gap-2 text-foreground">
+			<HugeiconsIcon icon={SubtitleIcon} class="h-4 w-4 text-primary" />
+			<span class="text-xs font-semibold tracking-wider uppercase text-muted-foreground">Transkrip Video</span>
 		</div>
 
 		{#if textStats}
@@ -300,43 +272,9 @@
 				<p class="text-sm font-medium">Tidak ada transkrip atau subtitel untuk video ini.</p>
 				<p class="text-xs text-muted-foreground/70">Pastikan video memiliki Closed Captions (CC) di YouTube.</p>
 			</div>
-		{:else if viewMode === 'sentence' && videoTranscript.sentences && videoTranscript.sentences.length > 0}
-			<!-- Sentence Mode (Reconstructed full grammatical sentences) -->
-			<div class="space-y-3 pb-[50vh] pt-2">
-				{#each videoTranscript.sentences as sentence, sIdx (sentence.id)}
-					{@const isActive = sIdx === videoTranscript.activeSentenceIndex}
-					{@const isPast = sIdx < videoTranscript.activeSentenceIndex}
-					<button
-						data-sentence-index={sIdx}
-						type="button"
-						onclick={() => seekTo(sentence.start_ms)}
-						class="block w-full origin-left cursor-pointer text-left font-heading font-semibold leading-relaxed transition-[color,opacity,transform,background] duration-300 ease-out py-2.5 px-3 rounded-2xl text-base md:text-lg hover:text-foreground hover:opacity-100 {isActive
-							? 'bg-primary/10 text-foreground font-bold opacity-100 shadow-sm border border-primary/20 scale-[1.01]'
-							: isPast
-								? 'text-muted-foreground opacity-40 hover:bg-foreground/5'
-								: 'text-muted-foreground opacity-75 hover:bg-foreground/5'}"
-					>
-						<span>
-							{#each sentence.text.split(' ') as word}
-								{@const clean = cleanWordToken(word)}
-								<!-- svelte-ignore a11y_click_events_have_key_events -->
-								<span
-									role="button"
-									tabindex="0"
-									onclick={(e) => handleWordClick(word, sentence.text, e)}
-									class="inline-block px-0.5 rounded hover:bg-primary/20 hover:text-primary transition-colors {vocab.getWordClass(clean)}"
-									title="Klik untuk arti kamus"
-								>
-									{word}{' '}
-								</span>
-							{/each}
-						</span>
-					</button>
-				{/each}
-			</div>
 		{:else}
-			<!-- Raw Subtitle Mode (YouTube original cues) -->
-			<div class="space-y-2 pb-[50vh] pt-2">
+			<!-- YouTube Subtitle Lines Mode -->
+			<div class="space-y-2.5 pb-[50vh] pt-2">
 				{#each transcript.lines as line, idx (idx)}
 					{@const isActive = idx === activeIndex}
 					{@const isPast = idx < activeIndex}
@@ -344,11 +282,11 @@
 						data-index={idx}
 						type="button"
 						onclick={() => seekTo(line.time_ms)}
-						class="block w-full origin-left cursor-pointer text-left font-heading font-semibold leading-relaxed transition-[color,opacity,transform] duration-300 ease-out py-2 text-base md:text-lg hover:text-foreground hover:opacity-100 {isActive
-							? 'scale-[1.03] text-foreground font-bold opacity-100'
+						class="block w-full origin-left cursor-pointer text-left font-heading font-semibold leading-relaxed transition-all duration-200 ease-out py-2.5 px-3 rounded-2xl text-base md:text-lg hover:text-foreground hover:opacity-100 {isActive
+							? 'bg-primary/10 text-foreground font-bold opacity-100 shadow-sm border border-primary/20 scale-[1.01]'
 							: isPast
-								? 'text-muted-foreground opacity-35'
-								: 'text-muted-foreground opacity-65'}"
+								? 'text-muted-foreground opacity-35 hover:bg-foreground/5'
+								: 'text-muted-foreground opacity-70 hover:bg-foreground/5'}"
 					>
 						<span>
 							{#each line.text.split(' ') as word}

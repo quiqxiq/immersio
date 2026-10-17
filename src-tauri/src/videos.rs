@@ -81,7 +81,7 @@ fn build_yt_headers(cookie: &str) -> HeaderMap {
 }
 
 /// Performs a raw InnerTube browse request with YouTube Web client.
-async fn post_browse(cookie: &str, browse_id: &str, params: Option<&str>) -> Result<Value, String> {
+pub(crate) async fn post_browse(cookie: &str, browse_id: &str, params: Option<&str>) -> Result<Value, String> {
     let client = get_client();
     let headers = build_yt_headers(cookie);
 
@@ -103,6 +103,43 @@ async fn post_browse(cookie: &str, browse_id: &str, params: Option<&str>) -> Res
 
     let resp = client
         .post(YT_BROWSE_URL)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Koneksi ke YouTube gagal: {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return Err(format!("YouTube error (status {status}): {err_text}"));
+    }
+
+    resp.json::<Value>()
+        .await
+        .map_err(|e| format!("Gagal membaca respons YouTube: {e}"))
+}
+
+/// Performs a raw InnerTube continuation browse request with YouTube Web client.
+pub(crate) async fn post_browse_continuation(cookie: &str, token: &str) -> Result<Value, String> {
+    let client = get_client();
+    let headers = build_yt_headers(cookie);
+
+    let body = serde_json::json!({
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20240101.00.00",
+                "hl": "en",
+                "gl": "US"
+            }
+        }
+    });
+
+    let url = format!("{YT_BROWSE_URL}?continuation={}", urlencoding::encode(token));
+
+    let resp = client
+        .post(&url)
         .headers(headers)
         .json(&body)
         .send()
@@ -239,7 +276,7 @@ fn extract_text_val(val: &Value) -> Option<String> {
 }
 
 /// Recursively traverses a JSON value to collect YouTube videos.
-fn extract_videos(val: &Value, out: &mut Vec<SongItem>) {
+pub(crate) fn extract_videos(val: &Value, out: &mut Vec<SongItem>) {
     match val {
         Value::Object(map) => {
             if let Some(lum) = map.get("lockupViewModel") {

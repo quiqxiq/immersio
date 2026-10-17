@@ -1075,6 +1075,7 @@ export interface LyricSentence {
 	duration_ms: number;
 	word_count: number;
 	suggested_pause_ms: number;
+	skip_pause?: boolean;
 }
 
 export interface Lyrics {

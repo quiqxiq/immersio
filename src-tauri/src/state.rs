@@ -540,15 +540,9 @@ impl AppState {
                     u
                 }
             };
-            // Through the same chunked loopback proxy as the audio, for the same reason: mpv's
-            // open-ended range request is throttled to ~2x realtime (audioproxy.rs). Direct when
-            // the user has a proxy, as `mpv_stream_url` does.
-            let proxied = if crate::http::has_proxy() {
-                None
-            } else {
-                crate::audioproxy::register(&url, &std::collections::HashMap::new())
-            };
-            st.player.set_video_for(&audio, proxied.as_deref().unwrap_or(&url));
+            // Video streams are handed directly to mpv. mpv's internal HTTP demuxer
+            // handles adaptive YouTube streams natively without 4 MiB chunk slicing.
+            st.player.set_video_for(&audio, &url);
             let _ = st.app.emit("video-ready", &id);
         });
     }
@@ -2192,6 +2186,34 @@ impl AppState {
             .filter(|(vid, _)| *vid == item.video_id)
             .map(|(_, pos)| pos);
         let stream_url = mpv_stream_url(&data);
+
+        // Pre-resolve and attach video URL *before* loading and playing audio so that video
+        // and audio start simultaneously from 0.0s, eliminating the 2-3s blank video loading lag.
+        let is_video_track = (data.is_video.unwrap_or(false) || item.is_video)
+            && native_video()
+            && !crate::local::is_local_song(&item.video_id)
+            && self.db.get_setting("music_videos").as_deref() != Some("false");
+
+        if is_video_track {
+            let id = &item.video_id;
+            let video_url = match self.video_url(id) {
+                Some(u) => Some(u),
+                None => {
+                    let disabled = self.disabled_clients();
+                    if let Some(u) = self.orchestrator.resolve_video(id, 720, &disabled).await {
+                        self.put_video_url(id, u.clone());
+                        Some(u)
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(url) = video_url {
+                self.player.set_video_for(&stream_url, &url);
+                let _ = self.app.emit("video-ready", id);
+            }
+        }
+
         if let Err(e) =
             self.player.load(&stream_url, &data.headers, self.track_gain(data.loudness_db), seek)
         {

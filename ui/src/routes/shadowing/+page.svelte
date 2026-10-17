@@ -6,11 +6,7 @@
 		Search01Icon,
 		Cancel01Icon,
 		RefreshIcon,
-		PlayIcon,
-		SparklesIcon,
-		Fire02Icon,
-		Video01Icon,
-		Comment01Icon
+		PlayIcon
 	} from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
 	import type { SongItem } from '$lib/api';
@@ -21,20 +17,20 @@
 	interface Category {
 		id: string;
 		label: string;
-		icon: any;
-		badge?: string;
 	}
 
 	const CATEGORIES: Category[] = [
-		{ id: 'starter', label: '⭐ Pilihan Ikonik', icon: SparklesIcon, badge: 'Rekomendasi' },
-		{ id: 'bbc', label: '🎭 BBC Drama Shorts', icon: Film02Icon, badge: 'Aksen British' },
-		{ id: 'movieclips', label: '🎬 Movieclips', icon: Video01Icon },
-		{ id: 'binge', label: '🔥 Binge Society', icon: Fire02Icon },
-		{ id: 'scenecity', label: '🏙️ Scene City', icon: Film02Icon },
-		{ id: 'series', label: '☕ TV Series (Sitcom)', icon: Comment01Icon },
-		{ id: 'omeleto', label: '📽️ Omeleto Shorts', icon: PlayIcon },
-		{ id: 'ted', label: '💡 TED-Ed Stories', icon: SparklesIcon },
-		{ id: 'all', label: '🌐 Jelajah Semua', icon: Video01Icon }
+		{ id: 'starter', label: 'Rekomendasi' },
+		{ id: 'criticpicks', label: 'Critic Picks' },
+		{ id: 'clipempire', label: 'Clip Empire' },
+		{ id: 'dollartheater', label: 'The Dollar Theater' },
+		{ id: 'binge', label: 'Binge Society' },
+		{ id: 'firstslasts', label: 'Firsts and Lasts' },
+		{ id: 'movieclips', label: 'Movieclips' },
+		{ id: 'scenecity', label: 'Scene City' },
+		{ id: 'omeleto', label: 'Omeleto' },
+		{ id: 'series', label: 'TV Series' },
+		{ id: 'all', label: 'Jelajah Semua' }
 	];
 
 	let activeCategory = $state('starter');
@@ -126,7 +122,7 @@
 					</h1>
 				</div>
 				<p class="mt-1.5 text-xs sm:text-sm text-muted-foreground max-w-2xl">
-					Tonton adegan film & drama pilihan (<span class="text-primary font-semibold">&lt;10 menit</span>). 
+					Tonton adegan film & drama pilihan (<span class="text-primary font-semibold">2–15 menit</span>). 
 					Video otomatis berhenti di setiap akhir kalimat agar Anda dapat menirukan intonasi dan pengucapan aktor.
 				</p>
 			</div>
@@ -166,7 +162,7 @@
 			<input
 				type="text"
 				bind:value={query}
-				placeholder="Cari adegan film, BBC drama, atau aktor (misal: Sherlock, Good Will Hunting, Friends)..."
+				placeholder="Cari adegan film, klip drama, atau aktor (misal: Good Will Hunting, Friends, Al Pacino)..."
 				class="h-11 w-full rounded-full border border-border/50 bg-card pl-11 pr-24 text-sm text-foreground placeholder:text-muted-foreground shadow-xs transition-all focus:bg-background focus:outline-none focus:ring-2 focus:ring-primary/20"
 			/>
 			{#if query}
@@ -198,17 +194,11 @@
 				<button
 					type="button"
 					onclick={() => handleCategoryClick(cat.id)}
-					class="inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition-all cursor-pointer {isActive
+					class="inline-flex shrink-0 items-center justify-center rounded-xl px-4 py-1.5 text-xs font-semibold transition-all cursor-pointer {isActive
 						? 'bg-primary text-primary-foreground shadow-xs'
 						: 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground border border-border/30'}"
 				>
-					<HugeiconsIcon icon={cat.icon} size={14} />
 					<span>{cat.label}</span>
-					{#if cat.badge}
-						<span class="rounded-full px-1.5 py-0.2 text-[9px] {isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-primary/10 text-primary font-bold'}">
-							{cat.badge}
-						</span>
-					{/if}
 				</button>
 			{/each}
 		</div>
@@ -242,7 +232,7 @@
 				<HugeiconsIcon icon={Film02Icon} class="h-12 w-12 opacity-40" />
 				<p class="text-sm font-medium">Tidak ada klip adegan film yang ditemukan.</p>
 				<p class="text-xs text-muted-foreground/80 max-w-sm">
-					Coba gunakan kata kunci lain seperti "Friends", "BBC Drama", atau pilih kategori "Pilihan Ikonik".
+					Coba gunakan kata kunci lain seperti "Friends", "Al Pacino", atau pilih kategori "Rekomendasi".
 				</p>
 			</div>
 		{:else}
@@ -270,17 +260,10 @@
 								</div>
 							{/if}
 
-							<!-- Duration Badge (<10 mins) -->
+							<!-- Duration Badge (2-15 mins) -->
 							{#if v.duration}
 								<span class="absolute bottom-1.5 right-1.5 rounded bg-black/85 px-1.5 py-0.5 text-[10px] font-semibold text-white/95">
 									{v.duration}
-								</span>
-							{/if}
-
-							<!-- CEFR Tag if available -->
-							{#if v.album}
-								<span class="absolute top-1.5 left-1.5 rounded-md bg-primary/90 backdrop-blur-xs px-2 py-0.5 text-[9px] font-bold text-primary-foreground tracking-wide shadow-xs">
-									{v.album}
 								</span>
 							{/if}
 

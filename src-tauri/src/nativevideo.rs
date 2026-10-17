@@ -273,11 +273,17 @@ pub async fn set_rect(
             true
         });
         tracing::debug!(?rect, shown, "native video: rect");
-        // After the surface, so mpv never starts a video output with no context to draw into.
-        state.player.set_video_visible(shown);
         let _ = tx.send(shown);
     });
-    res.is_ok() && rx.await.unwrap_or(false)
+    if res.is_ok() {
+        if let Ok(shown) = rx.await {
+            // After the surface is positioned, tell mpv whether to decode video off the GTK thread.
+            // This prevents mpv demuxer / reconnect locks from freezing the GTK UI event loop.
+            state.player.set_video_visible(shown);
+            return shown;
+        }
+    }
+    false
 }
 
 // --- Ambient light ------------------------------------------------------------------------------

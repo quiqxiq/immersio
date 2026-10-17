@@ -87,55 +87,6 @@ export const videoTranscript = $state({
 export function reconstructSentences(lines: LyricLine[]): LyricSentence[] {
 	if (!lines || lines.length === 0) return [];
 
-	interface WordToken {
-		text: string;
-		start_ms: number;
-		end_ms: number;
-	}
-
-	const words: WordToken[] = [];
-
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
-		const lineText = (line.text || '').trim();
-		if (!lineText) continue;
-
-		const startMs = line.time_ms ?? 0;
-		const nextStart = i + 1 < lines.length ? lines[i + 1].time_ms : undefined;
-		const endMs =
-			line.end_time_ms ??
-			(nextStart ?? startMs + Math.max(1500, lineText.split(/\s+/).length * 380));
-
-		if (line.words && line.words.length > 0) {
-			for (const lw of line.words) {
-				words.push({
-					text: lw.text,
-					start_ms: lw.start_ms,
-					end_ms: lw.end_ms
-				});
-			}
-			continue;
-		}
-
-		const tokens = lineText.split(/\s+/).filter(Boolean);
-		if (tokens.length === 0) continue;
-
-		const dur = Math.max(tokens.length * 200, endMs - startMs);
-		const perWord = Math.floor(dur / tokens.length);
-
-		for (let w = 0; w < tokens.length; w++) {
-			const wStart = startMs + w * perWord;
-			const wEnd = w + 1 === tokens.length ? endMs : wStart + perWord;
-			words.push({
-				text: tokens[w],
-				start_ms: wStart,
-				end_ms: wEnd
-			});
-		}
-	}
-
-	if (words.length === 0) return [];
-
 	const ABBR_SET = new Set([
 		'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.', 'st.',
 		'u.s.', 'u.k.', 'e.g.', 'i.e.', 'etc.', 'vs.', 'inc.', 'ltd.', 'corp.',
@@ -171,47 +122,82 @@ export function reconstructSentences(lines: LyricLine[]): LyricSentence[] {
 	}
 
 	const sentences: LyricSentence[] = [];
-	let currentWords: WordToken[] = [];
+	let curText = '';
+	let curStartMs = 0;
+	let curEndMs = 0;
+	let isFirstInChunk = true;
 
-	for (let i = 0; i < words.length; i++) {
-		const word = words[i];
-		currentWords.push(word);
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const text = (line.text || '').trim();
+		if (!text) continue;
 
-		const isLast = i + 1 === words.length;
-		let shouldBreak = isLast;
+		const startMs = line.time_ms ?? 0;
+		const endMs = line.end_time_ms ?? startMs + 2500;
 
-		if (!shouldBreak) {
-			const nextWord = words[i + 1];
-			if (endsWithTerminator(word.text)) {
-				shouldBreak = true;
-			} else if (nextWord.start_ms >= word.end_ms + 1200) {
-				shouldBreak = true;
-			} else if (currentWords.length >= 22 && /[,;\-]$/.test(word.text)) {
-				shouldBreak = true;
+		if (isFirstInChunk) {
+			curStartMs = startMs;
+			curEndMs = endMs;
+			curText = text;
+			isFirstInChunk = false;
+		} else {
+			curText += ' ' + text;
+			if (endMs > curEndMs) {
+				curEndMs = endMs;
 			}
 		}
 
-		if (shouldBreak && currentWords.length > 0) {
-			const first = currentWords[0];
-			const last = currentWords[currentWords.length - 1];
-			const text = currentWords.map((w) => w.text).join(' ');
-			const start_ms = first.start_ms;
-			const end_ms = last.end_ms;
-			const duration_ms = Math.max(0, end_ms - start_ms);
-			const word_count = currentWords.length;
-			const suggested_pause_ms = calculatePause(duration_ms, word_count);
+		const isLastLine = i + 1 === lines.length;
+		let shouldBreak = isLastLine;
+
+		if (!shouldBreak) {
+			const nextLine = lines[i + 1];
+			const nextStart = nextLine.time_ms ?? curEndMs;
+			const nextText = (nextLine.text || '').trim();
+			const gapMs = Math.max(0, nextStart - curEndMs);
+
+			const tokens = curText.split(/\s+/).filter(Boolean);
+			const lastToken = tokens[tokens.length - 1] || '';
+			const hasTerminal = endsWithTerminator(lastToken);
+			const wordsCount = tokens.length;
+			const nextWordsCount = nextText.split(/\s+/).filter(Boolean).length;
+
+			if (hasTerminal) {
+				if (wordsCount <= 2 && gapMs < 1000 && !nextText.startsWith('-')) {
+					shouldBreak = false;
+				} else if (wordsCount <= 4 && nextWordsCount <= 4 && gapMs < 800 && !nextText.startsWith('-')) {
+					shouldBreak = false;
+				} else {
+					shouldBreak = true;
+				}
+			} else {
+				if (gapMs >= 1200 || nextText.startsWith('- ') || wordsCount >= 24) {
+					shouldBreak = true;
+				} else {
+					shouldBreak = false;
+				}
+			}
+		}
+
+		if (shouldBreak) {
+			const wordCount = curText.split(/\s+/).filter(Boolean).length;
+			const durationMs = Math.max(0, curEndMs - curStartMs);
+			const suggestedPauseMs = calculatePause(durationMs, wordCount);
+			const skipPause = wordCount <= 2;
 
 			sentences.push({
 				id: sentences.length,
-				text,
-				start_ms,
-				end_ms,
-				duration_ms,
-				word_count,
-				suggested_pause_ms
+				text: curText,
+				start_ms: curStartMs,
+				end_ms: curEndMs,
+				duration_ms: durationMs,
+				word_count: wordCount,
+				suggested_pause_ms: suggestedPauseMs,
+				skip_pause: skipPause
 			});
 
-			currentWords = [];
+			isFirstInChunk = true;
+			curText = '';
 		}
 	}
 
