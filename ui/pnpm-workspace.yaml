@@ -2,3 +2,6 @@ allowBuilds:
   '@hugeicons/svelte': false
   '@tailwindcss/oxide': true
   esbuild: true
+  onnxruntime-node: set this to true or false
+  protobufjs: set this to true or false
+  sharp: set this to true or false

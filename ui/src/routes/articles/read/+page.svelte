@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
@@ -11,7 +11,11 @@
 		BookOpenTextIcon,
 		VolumeHighIcon,
 		Cancel01Icon,
-		ArrowReloadHorizontalIcon
+		ArrowReloadHorizontalIcon,
+		HeadphonesIcon,
+		PlayIcon,
+		PauseIcon,
+		SparklesIcon
 	} from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
 	import type { ArticleContent } from '$lib/api';
@@ -22,12 +26,15 @@
 	import ErrorState from '$lib/components/ErrorState.svelte';
 	import WordPopup from '$lib/components/WordPopup.svelte';
 	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
+	import ArticleTtsBar from '$lib/components/ArticleTtsBar.svelte';
 	import { vocab } from '$lib/vocab.svelte';
 	import { cleanWordToken } from '$lib/lemma';
+	import { tts } from '$lib/tts.svelte';
 
 	let loading = $state(true);
 	let article = $state<ArticleContent | null>(null);
 	let processedHtml = $state('');
+	let articleSentences = $state<string[]>([]);
 	let error = $state<string | null>(null);
 
 	// Reading customization preferences
@@ -60,6 +67,8 @@
 			const doc = parser.parseFromString(rawHtml, 'text/html');
 
 			const containers = doc.querySelectorAll('p, li, blockquote, h1, h2, h3, h4');
+			let sentenceCounter = 0;
+			const collected: string[] = [];
 
 			containers.forEach((container) => {
 				const walker = doc.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -89,8 +98,12 @@
 							continue;
 						}
 
+						const curIdx = sentenceCounter++;
+						collected.push(sentence.trim());
+
 						const sentenceSpan = doc.createElement('span');
 						sentenceSpan.className = 'reader-sentence';
+						sentenceSpan.setAttribute('data-sentence-index', String(curIdx));
 
 						// Split sentence into words and whitespace
 						const words = sentence.split(/(\s+)/);
@@ -119,6 +132,7 @@
 				}
 			});
 
+			articleSentences = collected;
 			return doc.body.innerHTML;
 		} catch (e) {
 			console.error('Failed to enhance HTML with reader tokens:', e);
@@ -186,12 +200,7 @@
 	}
 
 	function speakWord(word: string) {
-		if (!('speechSynthesis' in window)) return;
-		window.speechSynthesis.cancel();
-		const utter = new SpeechSynthesisUtterance(word);
-		utter.lang = 'en-US';
-		utter.rate = 0.9;
-		window.speechSynthesis.speak(utter);
+		tts.speakSingle(word);
 	}
 
 	function openCambridgeDictionary(word: string) {
@@ -226,6 +235,19 @@
 				selectedSentence = sentText;
 				selectedAnchorRect = rect;
 				return;
+			}
+		}
+
+		// Check if user clicked a sentence directly to play TTS
+		const sentEl = target.closest('.reader-sentence') as HTMLElement | null;
+		if (sentEl && !wordEl && !target.closest('a')) {
+			const idxStr = sentEl.getAttribute('data-sentence-index');
+			if (idxStr !== null) {
+				const idx = parseInt(idxStr, 10);
+				if (!isNaN(idx) && articleSentences.length > 0) {
+					tts.playArticle(articleSentences, idx);
+					return;
+				}
 			}
 		}
 
@@ -322,6 +344,26 @@
 	onMount(() => {
 		loadArticle();
 	});
+
+	onDestroy(() => {
+		tts.stop();
+	});
+
+	$effect(() => {
+		const activeIdx = tts.activeSentenceIndex;
+		if (typeof document === 'undefined') return;
+
+		const prev = document.querySelectorAll('.reader-sentence.active-tts-sentence');
+		prev.forEach((el) => el.classList.remove('active-tts-sentence'));
+
+		if (activeIdx !== null) {
+			const targetEl = document.querySelector(`.reader-sentence[data-sentence-index="${activeIdx}"]`);
+			if (targetEl) {
+				targetEl.classList.add('active-tts-sentence');
+				targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}
+		}
+	});
 </script>
 
 <div class="relative min-h-screen pb-36 pt-1">
@@ -349,6 +391,41 @@
 
 		<!-- Action Controls -->
 		<div class="flex items-center gap-2">
+			<!-- Dengarkan Artikel (Kokoro TTS) Button -->
+			<button
+				type="button"
+				onclick={() => {
+					if (tts.playing && !tts.paused) {
+						tts.pause();
+					} else if (tts.paused) {
+						tts.resume();
+					} else if (articleSentences.length > 0) {
+						tts.playArticle(articleSentences, tts.activeSentenceIndex ?? 0);
+					}
+				}}
+				class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition shadow-xs cursor-pointer {tts.playing && !tts.paused
+					? 'bg-primary text-primary-foreground shadow-sm'
+					: tts.loading
+						? 'bg-primary/20 text-primary animate-pulse'
+						: 'bg-primary/15 text-primary hover:bg-primary/25'}"
+				title="Dengarkan artikel dibacakan dengan suara studio alami Kokoro-82M"
+			>
+				{#if tts.loading}
+					<HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={13} class="animate-spin" />
+					<span>Memuat Kokoro...</span>
+				{:else if tts.playing && !tts.paused}
+					<HugeiconsIcon icon={PauseIcon} size={13} />
+					<span>Jeda Suara</span>
+				{:else if tts.paused}
+					<HugeiconsIcon icon={PlayIcon} size={13} />
+					<span>Lanjutkan</span>
+				{:else}
+					<HugeiconsIcon icon={HeadphonesIcon} size={13} />
+					<span class="hidden sm:inline">Dengarkan Artikel</span>
+					<span class="sm:hidden">Dengar</span>
+				{/if}
+			</button>
+
 			<!-- Font Serif / Sans Toggle -->
 			<button
 				type="button"
@@ -622,6 +699,9 @@
 			onclose={() => (selectedAiWord = null)}
 		/>
 	{/if}
+
+	<!-- Floating Article Audio Player Bar & Kokoro Manager -->
+	<ArticleTtsBar />
 </div>
 
 <style>
@@ -711,11 +791,16 @@
 		border-radius: 0.375rem;
 		padding: 0.1rem 0.2rem;
 		margin: -0.1rem -0.2rem;
-		transition: background-color 0.15s ease;
+		transition: background-color 0.15s ease, box-shadow 0.15s ease;
 		display: inline;
 	}
 	:global(.article-body .reader-sentence:hover) {
 		background-color: rgba(125, 125, 125, 0.08);
+	}
+	:global(.article-body .reader-sentence.active-tts-sentence) {
+		background-color: rgba(59, 130, 246, 0.18) !important;
+		box-shadow: 0 0 0 2px var(--color-primary, #3b82f6), 0 2px 10px rgba(59, 130, 246, 0.22);
+		border-radius: 0.375rem;
 	}
 
 	/* Word hover background & styling: Lingua-Miner square highlight with subtle padding */

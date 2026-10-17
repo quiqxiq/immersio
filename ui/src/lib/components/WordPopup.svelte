@@ -16,6 +16,7 @@
 	import * as api from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { tts } from '$lib/tts.svelte';
 
 	let {
 		word,
@@ -92,12 +93,7 @@
 	}
 
 	function playSpeech() {
-		if (!('speechSynthesis' in window)) return;
-		window.speechSynthesis.cancel();
-		const utter = new SpeechSynthesisUtterance(word);
-		utter.lang = 'en-US';
-		utter.rate = 0.9;
-		window.speechSynthesis.speak(utter);
+		tts.speakSingle(word);
 	}
 
 	async function handleMine() {
@@ -412,9 +408,19 @@
 			<!-- 3. Konteks Kalimat & Terjemahannya (Sentence Context & Translation) -->
 			{#if sentence}
 				<div class="rounded-xl border border-border/60 bg-muted/30 p-2.5 space-y-1">
-					<span class="text-[10px] uppercase font-bold text-muted-foreground tracking-wider block">
-						Konteks Kalimat
-					</span>
+					<div class="flex items-center justify-between gap-2">
+						<span class="text-[10px] uppercase font-bold text-muted-foreground tracking-wider block">
+							Konteks Kalimat
+						</span>
+						<button
+							type="button"
+							onclick={() => tts.speakSingle(sentence)}
+							class="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/10 text-primary transition hover:bg-primary hover:text-primary-foreground cursor-pointer"
+							title="Dengarkan Kalimat Utuh (Kokoro TTS)"
+						>
+							<HugeiconsIcon icon={VolumeHighIcon} size={11} />
+						</button>
+					</div>
 					<p class="text-foreground font-medium leading-relaxed">
 						"{sentence}"
 					</p>
