@@ -25,15 +25,6 @@ pub struct StreamCandidate {
     pub duration_secs: Option<u32>,
 }
 
-/// A subtitle track found for a video.
-#[derive(Debug, Clone)]
-pub struct SubtitleTrack {
-    pub url: String,
-    pub lang: String,
-    pub lang_name: String,
-    pub auto_generated: bool,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum FallbackError {
     #[error("age-restricted (rustypipe)")]
@@ -94,8 +85,17 @@ pub async fn resolve(video_id: &str, prefer_high: bool) -> Result<StreamCandidat
     })
 }
 
-/// Fetch available subtitles for any YouTube video (music or non-music).
-pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleTrack>, FallbackError> {
+/// A subtitle track found via rustypipe fallback.
+#[derive(Debug, Clone)]
+pub struct SubtitleTrack {
+    pub lang: String,
+    pub name: String,
+    pub url: String,
+    pub auto_generated: bool,
+}
+
+/// Retrieve available subtitle tracks for a videoId via rustypipe fallback.
+pub async fn get_subtitles(video_id: &str) -> Result<Vec<SubtitleTrack>, FallbackError> {
     let storage = std::env::temp_dir().join("limusic-rustypipe");
     std::fs::create_dir_all(&storage).ok();
     let player = RustyPipe::builder()
@@ -111,9 +111,9 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleTrack>, Fallb
         .subtitles
         .into_iter()
         .map(|s| SubtitleTrack {
-            url: s.url,
             lang: s.lang,
-            lang_name: s.lang_name,
+            name: s.lang_name,
+            url: s.url,
             auto_generated: s.auto_generated,
         })
         .collect())

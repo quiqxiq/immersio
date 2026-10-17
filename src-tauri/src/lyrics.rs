@@ -509,6 +509,116 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
     lines
 }
 
+fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
+    // Try parsing as json3 first
+    if let Ok(events) = serde_json::from_str::<CaptionEvents>(body_text) {
+        let mut lines = Vec::new();
+        for ev in events.events {
+            let line_start = ev.start_ms;
+            let line_duration = ev.duration_ms;
+            let line_end = match (line_start, line_duration) {
+                (Some(s), Some(d)) => Some(s + d),
+                _ => None,
+            };
+
+            let mut words = Vec::new();
+            let mut full_text = String::new();
+
+            for s in &ev.segs {
+                if let Some(utf8) = &s.utf8 {
+                    full_text.push_str(utf8);
+                }
+            }
+            let text = full_text.trim();
+            if !text.is_empty() && text != "\n" {
+                if let Some(base_ms) = line_start {
+                    for s in &ev.segs {
+                        if let Some(utf8) = &s.utf8 {
+                            let trimmed = utf8.trim();
+                            if !trimmed.is_empty() && trimmed != "\n" {
+                                let w_start = base_ms + s.offset_ms.unwrap_or(0);
+                                let w_end = w_start + 350;
+                                words.push(LyricWord {
+                                    text: trimmed.to_string(),
+                                    start_ms: w_start,
+                                    end_ms: w_end,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                let mut line = LyricLine::simple(line_start, text.to_owned());
+                line.end_time_ms = line_end;
+                if !words.is_empty() {
+                    line.words = Some(words);
+                }
+                lines.push(line);
+            }
+        }
+        if !lines.is_empty() {
+            let sentences = reconstruct_sentences(&lines);
+            return Some(Lyrics {
+                source: format!("YouTube Subtitles ({label})"),
+                synced: true,
+                sentences: Some(sentences),
+                lines,
+                ..Default::default()
+            });
+        }
+    }
+
+    // Fallback: parse as XML (supports <p> and <text> formats)
+    let xml_lines = parse_caption_xml(body_text);
+    if !xml_lines.is_empty() {
+        let sentences = reconstruct_sentences(&xml_lines);
+        return Some(Lyrics {
+            source: format!("YouTube Subtitles ({label})"),
+            synced: true,
+            sentences: Some(sentences),
+            lines: xml_lines,
+            ..Default::default()
+        });
+    }
+
+    None
+}
+
+async fn fetch_caption_body(caption_url: &str) -> Option<String> {
+    static RE_FMT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_fmt = RE_FMT.get_or_init(|| regex::Regex::new(r"([?&])fmt=[^&]*").unwrap());
+    let json_url = if re_fmt.is_match(caption_url) {
+        re_fmt.replace_all(caption_url, "$1fmt=json3").to_string()
+    } else if caption_url.contains('?') {
+        format!("{caption_url}&fmt=json3")
+    } else {
+        format!("{caption_url}?fmt=json3")
+    };
+
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .unwrap_or_else(|_| crate::http::client().clone());
+
+    if let Ok(r) = http.get(&json_url).send().await {
+        if let Ok(txt) = r.text().await {
+            if !txt.trim().is_empty() {
+                return Some(txt);
+            }
+        }
+    }
+
+    if let Ok(r) = http.get(caption_url).send().await {
+        if let Ok(txt) = r.text().await {
+            if !txt.trim().is_empty() {
+                return Some(txt);
+            }
+        }
+    }
+
+    None
+}
+
 /// YouTube Music's own lyrics, or YouTube Closed Captions (subtitles).
 async fn youtube_get(
     state: &AppState,
@@ -540,123 +650,23 @@ async fn youtube_get(
     }
 
     // 2. Next, check Closed Captions (subtitles) from YouTube player endpoint.
-    // Try WEB_REMIX (MAIN_CLIENT) first, then TVHTML5_SIMPLY and VISIONOS.
+    // Try ANDROID_VR first (which reliably returns full captions for YouTube videos),
+    // and fallback to WEB_REMIX, VISIONOS, and TVHTML5_SIMPLY.
     let caption_clients = [
+        "ANDROID_VR_1_65_10",
+        "ANDROID_VR_1_43_32",
         innertube::MAIN_CLIENT,
-        "TVHTML5_SIMPLY",
         "VISIONOS",
+        "TVHTML5_SIMPLY",
     ];
     for client_key in caption_clients {
         if let Some(client) = state.clients.get(client_key) {
             if let Ok(resp) = state.it.player(client, &req.video_id, None, None, None).await {
                 if let Some(captions) = &resp.captions {
                     if let Some((caption_url, label)) = captions.best_caption() {
-                        // Prepare URL asking for fmt=json3
-                        static RE_FMT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-                        let re_fmt = RE_FMT.get_or_init(|| regex::Regex::new(r"([?&])fmt=[^&]*").unwrap());
-                        let json_url = if re_fmt.is_match(&caption_url) {
-                            re_fmt.replace_all(&caption_url, "$1fmt=json3").to_string()
-                        } else if caption_url.contains('?') {
-                            format!("{caption_url}&fmt=json3")
-                        } else {
-                            format!("{caption_url}?fmt=json3")
-                        };
-
-                        let http = reqwest::Client::builder()
-                            .timeout(Duration::from_secs(4))
-                            .build()
-                            .unwrap_or_else(|_| crate::http::client().clone());
-
-                        let mut body_opt = None;
-                        if let Ok(r) = http.get(&json_url).send().await {
-                            if let Ok(txt) = r.text().await {
-                                if !txt.trim().is_empty() {
-                                    body_opt = Some(txt);
-                                }
-                            }
-                        }
-
-                        // If json_url failed or returned empty, try raw caption_url
-                        if body_opt.is_none() {
-                            if let Ok(r) = http.get(&caption_url).send().await {
-                                if let Ok(txt) = r.text().await {
-                                    if !txt.trim().is_empty() {
-                                        body_opt = Some(txt);
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some(body_text) = body_opt {
-                            // Try parsing as json3 first
-                            if let Ok(events) = serde_json::from_str::<CaptionEvents>(&body_text) {
-                                let mut lines = Vec::new();
-                                for ev in events.events {
-                                    let line_start = ev.start_ms;
-                                    let line_duration = ev.duration_ms;
-                                    let line_end = match (line_start, line_duration) {
-                                        (Some(s), Some(d)) => Some(s + d),
-                                        _ => None,
-                                    };
-
-                                    let mut words = Vec::new();
-                                    let mut full_text = String::new();
-
-                                    for s in &ev.segs {
-                                        if let Some(utf8) = &s.utf8 {
-                                            full_text.push_str(utf8);
-                                        }
-                                    }
-                                    let text = full_text.trim();
-                                    if !text.is_empty() && text != "\n" {
-                                        if let Some(base_ms) = line_start {
-                                            for s in &ev.segs {
-                                                if let Some(utf8) = &s.utf8 {
-                                                    let trimmed = utf8.trim();
-                                                    if !trimmed.is_empty() && trimmed != "\n" {
-                                                        let w_start = base_ms + s.offset_ms.unwrap_or(0);
-                                                        let w_end = w_start + 350;
-                                                        words.push(LyricWord {
-                                                            text: trimmed.to_string(),
-                                                            start_ms: w_start,
-                                                            end_ms: w_end,
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        let mut line = LyricLine::simple(line_start, text.to_owned());
-                                        line.end_time_ms = line_end;
-                                        if !words.is_empty() {
-                                            line.words = Some(words);
-                                        }
-                                        lines.push(line);
-                                    }
-                                }
-                                if !lines.is_empty() {
-                                    let sentences = reconstruct_sentences(&lines);
-                                    return Ok(Some(Lyrics {
-                                        source: format!("YouTube Subtitles ({label})"),
-                                        synced: true,
-                                        sentences: Some(sentences),
-                                        lines,
-                                        ..Default::default()
-                                    }));
-                                }
-                            }
-
-                            // Fallback: parse as XML (supports <p> and <text> formats)
-                            let xml_lines = parse_caption_xml(&body_text);
-                            if !xml_lines.is_empty() {
-                                let sentences = reconstruct_sentences(&xml_lines);
-                                return Ok(Some(Lyrics {
-                                    source: format!("YouTube Subtitles ({label})"),
-                                    synced: true,
-                                    sentences: Some(sentences),
-                                    lines: xml_lines,
-                                    ..Default::default()
-                                }));
+                        if let Some(body_text) = fetch_caption_body(&caption_url).await {
+                            if let Some(lyrics) = parse_caption_body(&body_text, &label) {
+                                return Ok(Some(lyrics));
                             }
                         }
                     }
@@ -665,42 +675,26 @@ async fn youtube_get(
         }
     }
 
-    // 3. Fallback: For any YouTube video (programming tutorials, lectures, podcasts, etc.)
-    // where standard InnerTube clients return UNPLAYABLE, extract signed subtitles via rustypipe:
-    if let Ok(tracks) = innertube::rustypipe_fallback::fetch_subtitles(&req.video_id).await {
-        if !tracks.is_empty() {
-            let best = tracks
-                .iter()
-                .find(|t| t.lang.starts_with("en") && !t.auto_generated)
-                .or_else(|| tracks.iter().find(|t| t.lang.starts_with("en")))
-                .or_else(|| tracks.first());
+    // 2b. If direct InnerTube player returned no captions (standard for non-music YouTube videos),
+    // query rustypipe fallback for signed subtitle tracks.
+    if let Ok(subs) = innertube::get_subtitles(&req.video_id).await {
+        let best_sub = subs
+            .iter()
+            .find(|s| s.lang == "en" && !s.auto_generated)
+            .or_else(|| subs.iter().find(|s| s.lang == "en"))
+            .or_else(|| subs.first());
 
-            if let Some(track) = best {
-                let http = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(4))
-                    .build()
-                    .unwrap_or_else(|_| crate::http::client().clone());
-
-                if let Ok(r) = http.get(&track.url).send().await {
-                    if let Ok(txt) = r.text().await {
-                        let xml_lines = parse_caption_xml(&txt);
-                        if !xml_lines.is_empty() {
-                            let sentences = reconstruct_sentences(&xml_lines);
-                            return Ok(Some(Lyrics {
-                                source: format!("YouTube Subtitles ({})", track.lang_name),
-                                synced: true,
-                                sentences: Some(sentences),
-                                lines: xml_lines,
-                                ..Default::default()
-                            }));
-                        }
-                    }
+        if let Some(sub) = best_sub {
+            if let Some(body_text) = fetch_caption_body(&sub.url).await {
+                let label = &sub.name;
+                if let Some(lyrics) = parse_caption_body(&body_text, label) {
+                    return Ok(Some(lyrics));
                 }
             }
         }
     }
 
-    // 4. Fallback to plain text under YouTube's attribution
+    // 3. Fallback to plain text under YouTube's attribution
     let bid = match next {
         Ok(n) => n.as_ref().and_then(|n| n.lyrics_browse_id.clone()),
         Err(_) => None,
@@ -2287,6 +2281,37 @@ mod tests {
         assert_eq!(lines2[1].time_ms, Some(16000));
         assert_eq!(lines2[1].end_time_ms, Some(18500));
         assert!(lines2[1].text.contains("Multiline subtitle"));
+    }
+
+    #[test]
+    fn test_parse_caption_body() {
+        let json_body = r#"{
+            "events": [
+                {
+                    "tStartMs": 1000,
+                    "dDurationMs": 2500,
+                    "segs": [
+                        { "utf8": "Hello ", "tOffsetMs": 0 },
+                        { "utf8": "world", "tOffsetMs": 500 }
+                    ]
+                }
+            ]
+        }"#;
+        let lyrics_json = parse_caption_body(json_body, "English").expect("json3 parsed");
+        assert_eq!(lyrics_json.lines.len(), 1);
+        assert_eq!(lyrics_json.lines[0].text, "Hello world");
+        assert_eq!(lyrics_json.lines[0].time_ms, Some(1000));
+        assert_eq!(lyrics_json.lines[0].end_time_ms, Some(3500));
+        assert!(lyrics_json.lines[0].words.is_some());
+        assert_eq!(lyrics_json.lines[0].words.as_ref().unwrap().len(), 2);
+        assert!(lyrics_json.sentences.is_some());
+
+        let xml_body = r#"<transcript><text start="2.5" dur="3.0">Hello XML!</text></transcript>"#;
+        let lyrics_xml = parse_caption_body(xml_body, "English").expect("xml parsed");
+        assert_eq!(lyrics_xml.lines.len(), 1);
+        assert_eq!(lyrics_xml.lines[0].text, "Hello XML!");
+        assert_eq!(lyrics_xml.lines[0].time_ms, Some(2500));
+        assert_eq!(lyrics_xml.lines[0].end_time_ms, Some(5500));
     }
 
     /// Are the external providers still alive? Hits them all for real, so it is NOT in the default

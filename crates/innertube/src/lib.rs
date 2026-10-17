@@ -39,7 +39,7 @@ pub use models::player::{
     find_format, find_video_format, AudioQuality, Format, PlaybackTracking, PlayerResponse,
     StreamingData,
 };
-pub use rustypipe_fallback::{fetch_subtitles, FallbackError, StreamCandidate, SubtitleTrack};
+pub use rustypipe_fallback::{get_subtitles, FallbackError, StreamCandidate, SubtitleTrack};
 pub use transport::{
     cookie_sapisid, generate_cpn, sapisid_hash, without_healing, Error, Healing, InnerTube, Session,
 };
