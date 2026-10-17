@@ -2,7 +2,7 @@
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import { SubtitleIcon } from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
-	import { playback, shadowing, videoTranscript } from '$lib/player.svelte';
+	import { playback, shadowing, videoTranscript, reconstructSentences } from '$lib/player.svelte';
 	import WordPopup from '$lib/components/WordPopup.svelte';
 	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
 	import { vocab } from '$lib/vocab.svelte';
@@ -14,6 +14,7 @@
 	let scroller = $state<HTMLElement | null>(null);
 	let userScrolled = $state(false);
 	let scrollTimeout: any = null;
+	let viewMode = $state<'sentence' | 'raw'>('sentence');
 
 	// Selected word popup state for dictionary lookups
 	let selectedWord = $state<string | null>(null);
@@ -30,8 +31,10 @@
 		videoTranscript.loading = true;
 		transcript = null;
 		videoTranscript.lines = [];
+		videoTranscript.sentences = [];
 		activeIndex = -1;
 		videoTranscript.activeIndex = -1;
+		videoTranscript.activeSentenceIndex = -1;
 		userScrolled = false;
 		try {
 			let res: api.Lyrics | null = null;
@@ -60,24 +63,31 @@
 				});
 			}
 			transcript = res;
-			videoTranscript.lines = res?.lines || [];
+			const lines = res?.lines || [];
+			videoTranscript.lines = lines;
+			videoTranscript.sentences =
+				res?.sentences && res.sentences.length > 0
+					? res.sentences
+					: reconstructSentences(lines);
 			videoTranscript.source = res?.source || '';
 		} catch (e) {
 			console.error('Error fetching video transcript:', e);
 			transcript = null;
 			videoTranscript.lines = [];
+			videoTranscript.sentences = [];
 		} finally {
 			loading = false;
 			videoTranscript.loading = false;
 		}
 	}
 
-	// Watch current time and update active subtitle index without moving the outer page
+	// Watch current time and update active subtitle index & sentence index
 	$effect(() => {
 		const posMs = playback.position * 1000;
 		if (!transcript || !transcript.lines || transcript.lines.length === 0) {
 			activeIndex = -1;
 			videoTranscript.activeIndex = -1;
+			videoTranscript.activeSentenceIndex = -1;
 			return;
 		}
 
@@ -91,6 +101,20 @@
 				break;
 			}
 		}
+
+		// Also update active sentence index
+		const sentences = videoTranscript.sentences;
+		let foundSentence = -1;
+		for (let s = 0; s < sentences.length; s++) {
+			const st = sentences[s];
+			if (posMs >= st.start_ms && posMs < st.end_ms + 100) {
+				foundSentence = s;
+				break;
+			} else if (posMs >= st.start_ms) {
+				foundSentence = s;
+			}
+		}
+		videoTranscript.activeSentenceIndex = foundSentence;
 
 		if (found !== activeIndex) {
 			activeIndex = found;
@@ -149,12 +173,41 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-card">
-	<!-- Minimalist Top Bar -->
-	<div class="flex items-center justify-between border-b border-border/60 px-6 py-3">
-		<div class="flex items-center gap-2 text-foreground">
-			<HugeiconsIcon icon={SubtitleIcon} class="h-4 w-4 text-primary" />
-			<span class="text-xs font-semibold tracking-wider uppercase text-muted-foreground">Transkrip Video</span>
+	<!-- Minimalist Top Bar with Sentence vs Raw Subtitle Mode Toggle -->
+	<div class="flex items-center justify-between border-b border-border/60 px-6 py-3 flex-wrap gap-2">
+		<div class="flex items-center gap-3">
+			<div class="flex items-center gap-2 text-foreground">
+				<HugeiconsIcon icon={SubtitleIcon} class="h-4 w-4 text-primary" />
+				<span class="text-xs font-semibold tracking-wider uppercase text-muted-foreground">Transkrip Video</span>
+			</div>
+
+			<!-- View Mode Toggle Pills -->
+			{#if videoTranscript.sentences && videoTranscript.sentences.length > 0}
+				<div class="inline-flex items-center rounded-lg bg-foreground/5 p-0.5 border border-border/40 text-[10px]">
+					<button
+						type="button"
+						onclick={() => (viewMode = 'sentence')}
+						class="rounded px-2 py-0.5 font-semibold transition cursor-pointer {viewMode === 'sentence'
+							? 'bg-primary text-primary-foreground shadow-xs'
+							: 'text-muted-foreground hover:text-foreground'}"
+						title="Mode Kalimat Utuh (Rekomendasi Shadowing)"
+					>
+						Kalimat Utuh
+					</button>
+					<button
+						type="button"
+						onclick={() => (viewMode = 'raw')}
+						class="rounded px-2 py-0.5 font-semibold transition cursor-pointer {viewMode === 'raw'
+							? 'bg-primary text-primary-foreground shadow-xs'
+							: 'text-muted-foreground hover:text-foreground'}"
+						title="Mode Baris Subtitle YouTube"
+					>
+						Baris Subtitle
+					</button>
+				</div>
+			{/if}
 		</div>
+
 		{#if transcript?.lines && transcript.lines.length > 0}
 			{@const allText = transcript.lines.map((l) => l.text).join(' ')}
 			{@const stats = vocab.computeTextStats(allText)}
@@ -202,8 +255,42 @@
 				<p class="text-sm font-medium">Tidak ada transkrip atau subtitel untuk video ini.</p>
 				<p class="text-xs text-muted-foreground/70">Pastikan video memiliki Closed Captions (CC) di YouTube.</p>
 			</div>
+		{:else if viewMode === 'sentence' && videoTranscript.sentences && videoTranscript.sentences.length > 0}
+			<!-- Sentence Mode (Reconstructed full grammatical sentences) -->
+			<div class="space-y-3 pb-[50vh] pt-2">
+				{#each videoTranscript.sentences as sentence, sIdx (sentence.id)}
+					{@const isActive = sIdx === videoTranscript.activeSentenceIndex}
+					{@const isPast = sIdx < videoTranscript.activeSentenceIndex}
+					<button
+						data-sentence-index={sIdx}
+						type="button"
+						onclick={() => seekTo(sentence.start_ms)}
+						class="block w-full origin-left cursor-pointer text-left font-heading font-semibold leading-relaxed transition-[color,opacity,transform,background] duration-300 ease-out py-2.5 px-3 rounded-2xl text-base md:text-lg hover:text-foreground hover:opacity-100 {isActive
+							? 'bg-primary/10 text-foreground font-bold opacity-100 shadow-sm border border-primary/20 scale-[1.01]'
+							: isPast
+								? 'text-muted-foreground opacity-40 hover:bg-foreground/5'
+								: 'text-muted-foreground opacity-75 hover:bg-foreground/5'}"
+					>
+						<span>
+							{#each sentence.text.split(' ') as word}
+								{@const clean = cleanWordToken(word)}
+								<!-- svelte-ignore a11y_click_events_have_key_events -->
+								<span
+									role="button"
+									tabindex="0"
+									onclick={(e) => handleWordClick(word, sentence.text, e)}
+									class="inline-block px-0.5 rounded hover:bg-primary/20 hover:text-primary transition-colors {vocab.getWordClass(clean)}"
+									title="Klik untuk arti kamus"
+								>
+									{word}{' '}
+								</span>
+							{/each}
+						</span>
+					</button>
+				{/each}
+			</div>
 		{:else}
-			<!-- Bottom padding allows the final lines to center-scroll smoothly like lyrics -->
+			<!-- Raw Subtitle Mode (YouTube original cues) -->
 			<div class="space-y-2 pb-[50vh] pt-2">
 				{#each transcript.lines as line, idx (idx)}
 					{@const isActive = idx === activeIndex}
@@ -226,7 +313,8 @@
 									role="button"
 									tabindex="0"
 									onclick={(e) => handleWordClick(word, line.text, e)}
-									class="inline-block px-0.5 {vocab.getWordClass(clean)}"
+									class="inline-block px-0.5 rounded hover:bg-primary/20 hover:text-primary transition-colors {vocab.getWordClass(clean)}"
+									title="Klik untuk arti kamus"
 								>
 									{word}{' '}
 								</span>

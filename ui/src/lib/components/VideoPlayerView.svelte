@@ -50,6 +50,14 @@
 	let selectedAiAnchorRect = $state<DOMRect | null>(null);
 
 	let autoTimerTimeout: any = null;
+	let autoTimerInterval: any = null;
+
+	function clearShadowTimer() {
+		clearTimeout(autoTimerTimeout);
+		clearInterval(autoTimerInterval);
+		shadowing.pauseRemainingMs = 0;
+		shadowing.pauseTotalMs = 0;
+	}
 
 	function toggleFullscreen() {
 		if (!videoContainer) return;
@@ -66,6 +74,7 @@
 	}
 
 	function resumeNext() {
+		clearShadowTimer();
 		shadowing.isWaiting = false;
 		if (playback.paused) {
 			api.togglePause();
@@ -73,12 +82,26 @@
 	}
 
 	function replayCurrentSentence() {
+		clearShadowTimer();
+		const sentences = videoTranscript.sentences;
+		const sIdx = videoTranscript.activeSentenceIndex >= 0 ? videoTranscript.activeSentenceIndex : 0;
+		if (sentences && sentences.length > 0 && sIdx >= 0 && sIdx < sentences.length) {
+			const startMs = sentences[sIdx].start_ms;
+			api.seek(Math.max(0, startMs / 1000));
+			shadowing.lastPausedSentenceId = -1;
+			shadowing.isWaiting = false;
+			if (playback.paused) {
+				api.togglePause();
+			}
+			return;
+		}
+
 		const lines = videoTranscript.lines;
 		const idx = videoTranscript.activeIndex >= 0 ? videoTranscript.activeIndex : 0;
 		if (idx >= 0 && idx < lines.length) {
 			const startMs = lines[idx].time_ms ?? 0;
 			api.seek(Math.max(0, startMs / 1000));
-			shadowing.lastPausedIndex = -1;
+			shadowing.lastPausedSentenceId = -1;
 			shadowing.isWaiting = false;
 			if (playback.paused) {
 				api.togglePause();
@@ -87,13 +110,28 @@
 	}
 
 	function jumpSentence(delta: number) {
+		clearShadowTimer();
+		const sentences = videoTranscript.sentences;
+		if (sentences && sentences.length > 0) {
+			const cur = videoTranscript.activeSentenceIndex >= 0 ? videoTranscript.activeSentenceIndex : 0;
+			const nextIdx = Math.max(0, Math.min(sentences.length - 1, cur + delta));
+			const startMs = sentences[nextIdx].start_ms;
+			api.seek(Math.max(0, startMs / 1000));
+			shadowing.lastPausedSentenceId = -1;
+			shadowing.isWaiting = false;
+			if (playback.paused) {
+				api.togglePause();
+			}
+			return;
+		}
+
 		const lines = videoTranscript.lines;
 		if (!lines || lines.length === 0) return;
 		const cur = videoTranscript.activeIndex >= 0 ? videoTranscript.activeIndex : 0;
 		const nextIdx = Math.max(0, Math.min(lines.length - 1, cur + delta));
 		const startMs = lines[nextIdx].time_ms ?? 0;
 		api.seek(Math.max(0, startMs / 1000));
-		shadowing.lastPausedIndex = -1;
+		shadowing.lastPausedSentenceId = -1;
 		shadowing.isWaiting = false;
 		if (playback.paused) {
 			api.togglePause();
@@ -212,16 +250,60 @@
 		}
 	}
 
-	// Sentence Boundary Auto-Pause Engine
+	// Smart Sentence-Boundary Auto-Pause & Dynamic Timer Engine
 	$effect(() => {
 		if (!shadowing.active || !shadowing.autoPause) return;
+		const sentences = videoTranscript.sentences;
+		const sIdx = videoTranscript.activeSentenceIndex;
+		const posMs = playback.position * 1000;
+
+		// 1. Primary: Use full reconstructed sentences
+		if (sentences && sentences.length > 0 && sIdx >= 0 && sIdx < sentences.length) {
+			const curSentence = sentences[sIdx];
+			const endMs = curSentence.end_ms;
+
+			if (posMs >= endMs - 120 && posMs <= endMs + 800) {
+				if (!playback.paused && shadowing.lastPausedSentenceId !== curSentence.id) {
+					shadowing.lastPausedSentenceId = curSentence.id;
+					shadowing.isWaiting = true;
+					api.togglePause();
+
+					if (shadowing.pauseMode === 'timer') {
+						clearShadowTimer();
+						const totalPause = Math.round(
+							curSentence.suggested_pause_ms * (shadowing.paceMultiplier || 1.0)
+						);
+						shadowing.pauseTotalMs = totalPause;
+						shadowing.pauseRemainingMs = totalPause;
+
+						const startTick = Date.now();
+						autoTimerInterval = setInterval(() => {
+							const elapsed = Date.now() - startTick;
+							const remaining = Math.max(0, totalPause - elapsed);
+							shadowing.pauseRemainingMs = remaining;
+							if (remaining <= 0) {
+								clearInterval(autoTimerInterval);
+							}
+						}, 50);
+
+						autoTimerTimeout = setTimeout(() => {
+							clearInterval(autoTimerInterval);
+							if (shadowing.isWaiting && playback.paused) {
+								resumeNext();
+							}
+						}, totalPause);
+					}
+				}
+			}
+			return;
+		}
+
+		// 2. Fallback: Raw subtitle lines if sentences are not ready
 		const lines = videoTranscript.lines;
 		const idx = videoTranscript.activeIndex;
 		if (idx < 0 || idx >= lines.length) return;
 
 		const curLine = lines[idx];
-		const posMs = playback.position * 1000;
-
 		let endMs: number = curLine.end_time_ms ?? 0;
 		if (endMs <= (curLine.time_ms ?? 0)) {
 			if (idx + 1 < lines.length && lines[idx + 1].time_ms) {
@@ -231,20 +313,22 @@
 			}
 		}
 
-		// Detect sentence end with 150ms anticipation
-		if (posMs >= endMs - 150 && posMs <= endMs + 800) {
-			if (!playback.paused && shadowing.lastPausedIndex !== idx) {
-				shadowing.lastPausedIndex = idx;
+		if (posMs >= endMs - 120 && posMs <= endMs + 800) {
+			if (!playback.paused && shadowing.lastPausedSentenceId !== idx) {
+				shadowing.lastPausedSentenceId = idx;
 				shadowing.isWaiting = true;
 				api.togglePause();
 
 				if (shadowing.pauseMode === 'timer') {
-					clearTimeout(autoTimerTimeout);
+					clearShadowTimer();
+					const totalPause = 3500;
+					shadowing.pauseTotalMs = totalPause;
+					shadowing.pauseRemainingMs = totalPause;
 					autoTimerTimeout = setTimeout(() => {
 						if (shadowing.isWaiting && playback.paused) {
 							resumeNext();
 						}
-					}, shadowing.timerSeconds * 1000);
+					}, totalPause);
 				}
 			}
 		}
@@ -256,7 +340,7 @@
 		return () => {
 			window.removeEventListener('keydown', handleKeydown);
 			if (userAudioUrl) URL.revokeObjectURL(userAudioUrl);
-			clearTimeout(autoTimerTimeout);
+			clearShadowTimer();
 			clearInterval(recTimer);
 		};
 	});
@@ -452,10 +536,19 @@
 
 			<!-- SHADOWING ARENA: Focus Sentence Card & Rapid Replay Controls -->
 			{#if shadowing.active}
+				{@const sentences = videoTranscript.sentences}
+				{@const activeSentenceIdx = videoTranscript.activeSentenceIndex}
+				{@const curSentence = (sentences && activeSentenceIdx >= 0 && activeSentenceIdx < sentences.length) ? sentences[activeSentenceIdx] : null}
+				{@const nextSentence = (sentences && activeSentenceIdx + 1 < sentences.length) ? sentences[activeSentenceIdx + 1] : null}
+
 				{@const lines = videoTranscript.lines}
-				{@const activeIdx = videoTranscript.activeIndex}
-				{@const curLine = (lines && activeIdx >= 0 && activeIdx < lines.length) ? lines[activeIdx] : null}
-				{@const nextLine = (lines && activeIdx + 1 < lines.length) ? lines[activeIdx + 1] : null}
+				{@const activeLineIdx = videoTranscript.activeIndex}
+				{@const curLine = (lines && activeLineIdx >= 0 && activeLineIdx < lines.length) ? lines[activeLineIdx] : null}
+				{@const nextLine = (lines && activeLineIdx + 1 < lines.length) ? lines[activeLineIdx + 1] : null}
+
+				{@const currentDisplaySentenceText = curSentence ? curSentence.text : (curLine ? curLine.text : '')}
+				{@const nextDisplaySentenceText = nextSentence ? nextSentence.text : (nextLine ? nextLine.text : '')}
+				{@const timerPct = shadowing.pauseTotalMs > 0 ? Math.round((shadowing.pauseRemainingMs / shadowing.pauseTotalMs) * 100) : 0}
 
 				<div class="rounded-2xl border-2 {shadowing.isWaiting ? 'border-primary bg-primary/5 shadow-md shadow-primary/10' : 'border-border/60 bg-card/70'} p-4.5 backdrop-blur-md transition-all">
 					<!-- Header Status & Settings Ribbon -->
@@ -466,6 +559,16 @@
 								<span class="text-xs font-bold text-primary tracking-wide">
 									⏸️ Jeda Shadowing: Giliran Anda Menirukan!
 								</span>
+								{#if shadowing.pauseMode === 'timer'}
+									<div class="flex items-center gap-1.5 ml-2">
+										<span class="font-mono text-xs font-bold text-primary">
+											{(shadowing.pauseRemainingMs / 1000).toFixed(1)}s
+										</span>
+										<div class="h-2 w-20 sm:w-28 bg-primary/20 rounded-full overflow-hidden">
+											<div class="h-full bg-primary transition-all duration-75" style="width: {timerPct}%"></div>
+										</div>
+									</div>
+								{/if}
 							{:else}
 								<span class="flex h-2 w-2 rounded-full bg-emerald-500"></span>
 								<span class="text-xs font-semibold text-muted-foreground">
@@ -475,7 +578,7 @@
 						</div>
 
 						<!-- Auto-Pause Settings Options -->
-						<div class="flex items-center gap-2 text-xs">
+						<div class="flex items-center gap-2 text-xs flex-wrap">
 							<!-- Auto-Pause Toggle -->
 							<button
 								type="button"
@@ -488,29 +591,48 @@
 								Auto-Pause: {shadowing.autoPause ? 'ON' : 'OFF'}
 							</button>
 
+							<!-- Pace Multiplier Pills -->
+							<div class="inline-flex items-center rounded-lg bg-foreground/5 p-0.5 border border-border/40 text-[11px]">
+								{#each [{ label: 'Santai', val: 1.3 }, { label: 'Normal', val: 1.0 }, { label: 'Cepat', val: 0.8 }] as pace}
+									<button
+										type="button"
+										onclick={() => (shadowing.paceMultiplier = pace.val)}
+										class="rounded px-2 py-0.5 font-semibold transition cursor-pointer {shadowing.paceMultiplier === pace.val
+											? 'bg-primary text-primary-foreground shadow-xs'
+											: 'text-muted-foreground hover:text-foreground'}"
+										title="Tempo Jeda {pace.label} ({pace.val}x)"
+									>
+										{pace.label}
+									</button>
+								{/each}
+							</div>
+
 							<!-- Manual vs Timer Toggle -->
 							<button
 								type="button"
-								onclick={() => (shadowing.pauseMode = shadowing.pauseMode === 'manual' ? 'timer' : 'manual')}
+								onclick={() => {
+									shadowing.pauseMode = shadowing.pauseMode === 'manual' ? 'timer' : 'manual';
+									clearShadowTimer();
+								}}
 								class="rounded-lg px-2.5 py-1 font-medium transition-all border border-border/40 bg-foreground/5 hover:bg-foreground/10 text-muted-foreground cursor-pointer"
-								title="Pilih apakah video menunggu Spasi atau lanjut otomatis setelah 3 detik"
+								title="Pilih apakah video menunggu Spasi atau lanjut otomatis setelah jeda adaptif"
 							>
-								Mode: {shadowing.pauseMode === 'manual' ? 'Manual [Spasi]' : 'Timer (3s)'}
+								Mode: {shadowing.pauseMode === 'manual' ? 'Manual [Spasi]' : 'Auto Jeda'}
 							</button>
 						</div>
 					</div>
 
 					<!-- Current Sentence Typography Display -->
 					<div class="py-4 space-y-2">
-						{#if curLine}
+						{#if currentDisplaySentenceText}
 							<div class="text-lg sm:text-2xl font-bold leading-relaxed text-foreground tracking-tight">
-								{#each curLine.text.split(' ') as word}
+								{#each currentDisplaySentenceText.split(' ') as word}
 									{@const clean = cleanWordToken(word)}
 									<!-- svelte-ignore a11y_click_events_have_key_events -->
 									<span
 										role="button"
 										tabindex="0"
-										onclick={(e) => handleWordClick(word, curLine.text, e)}
+										onclick={(e) => handleWordClick(word, currentDisplaySentenceText, e)}
 										class="inline-block px-1 py-0.5 rounded hover:bg-primary/20 hover:text-primary transition-colors cursor-pointer {vocab.getWordClass(clean)}"
 										title="Klik kata untuk melihat arti & kamus"
 									>
@@ -519,10 +641,10 @@
 								{/each}
 							</div>
 
-							{#if nextLine}
+							{#if nextDisplaySentenceText}
 								<div class="text-xs text-muted-foreground/75 flex items-center gap-1.5 pt-1">
 									<span class="font-semibold text-muted-foreground">Kalimat Berikutnya:</span>
-									<span class="line-clamp-1 italic">"{nextLine.text}"</span>
+									<span class="line-clamp-1 italic">"{nextDisplaySentenceText}"</span>
 								</div>
 							{/if}
 						{:else}

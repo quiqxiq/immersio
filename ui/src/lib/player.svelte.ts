@@ -8,6 +8,7 @@ import type {
 	AccountIdentity,
 	BrowseItem,
 	LyricLine,
+	LyricSentence,
 	NowPlaying,
 	QueueState,
 	Rating,
@@ -58,9 +59,12 @@ export const np = $state({ open: false, tab: 'queue' as 'queue' | 'lyrics' | 'co
 export const shadowing = $state({
 	active: false,
 	autoPause: true,
-	pauseMode: 'manual' as 'manual' | 'timer',
-	timerSeconds: 3,
+	pauseMode: 'timer' as 'manual' | 'timer',
+	paceMultiplier: 1.0, // 1.3x relaxed, 1.0x normal, 0.8x fast
+	pauseRemainingMs: 0,
+	pauseTotalMs: 0,
 	lastPausedIndex: -1,
+	lastPausedSentenceId: -1,
 	isWaiting: false
 });
 
@@ -69,10 +73,150 @@ export const shadowing = $state({
  */
 export const videoTranscript = $state({
 	lines: [] as LyricLine[],
+	sentences: [] as LyricSentence[],
 	source: '',
 	loading: false,
-	activeIndex: -1
+	activeIndex: -1,
+	activeSentenceIndex: -1
 });
+
+/**
+ * Client-side sentence reconstruction for transcripts where backend sentences are absent.
+ * Aligns raw subtitle lines into complete grammatical sentences with dynamic pause recommendations.
+ */
+export function reconstructSentences(lines: LyricLine[]): LyricSentence[] {
+	if (!lines || lines.length === 0) return [];
+
+	interface WordToken {
+		text: string;
+		start_ms: number;
+		end_ms: number;
+	}
+
+	const words: WordToken[] = [];
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const lineText = (line.text || '').trim();
+		if (!lineText) continue;
+
+		const startMs = line.time_ms ?? 0;
+		const nextStart = i + 1 < lines.length ? lines[i + 1].time_ms : undefined;
+		const endMs =
+			line.end_time_ms ??
+			(nextStart ?? startMs + Math.max(1500, lineText.split(/\s+/).length * 380));
+
+		if (line.words && line.words.length > 0) {
+			for (const lw of line.words) {
+				words.push({
+					text: lw.text,
+					start_ms: lw.start_ms,
+					end_ms: lw.end_ms
+				});
+			}
+			continue;
+		}
+
+		const tokens = lineText.split(/\s+/).filter(Boolean);
+		if (tokens.length === 0) continue;
+
+		const dur = Math.max(tokens.length * 200, endMs - startMs);
+		const perWord = Math.floor(dur / tokens.length);
+
+		for (let w = 0; w < tokens.length; w++) {
+			const wStart = startMs + w * perWord;
+			const wEnd = w + 1 === tokens.length ? endMs : wStart + perWord;
+			words.push({
+				text: tokens[w],
+				start_ms: wStart,
+				end_ms: wEnd
+			});
+		}
+	}
+
+	if (words.length === 0) return [];
+
+	const ABBR_SET = new Set([
+		'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.', 'st.',
+		'u.s.', 'u.k.', 'e.g.', 'i.e.', 'etc.', 'vs.', 'inc.', 'ltd.', 'corp.',
+		'jan.', 'feb.', 'mar.', 'apr.', 'jun.', 'jul.', 'aug.', 'sep.', 'sept.', 'oct.', 'nov.', 'dec.',
+		'no.', 'vol.', 'dept.', 'est.', 'approx.', 'min.', 'sec.', 'hr.'
+	]);
+
+	function isAbbreviation(w: string): boolean {
+		const clean = w.replace(/["'()[\]“”‘’]/g, '').toLowerCase();
+		if (ABBR_SET.has(clean)) return true;
+		if (clean.length === 2 && clean.endsWith('.') && /[a-z]/i.test(clean[0])) return true;
+		if (/^[\d.,]+$/.test(clean) && clean.includes('.')) return true;
+		return false;
+	}
+
+	function endsWithTerminator(w: string): boolean {
+		const clean = w.replace(/["'()[\]”’]/g, '');
+		if (isAbbreviation(clean)) return false;
+		return (
+			clean.endsWith('.') ||
+			clean.endsWith('?') ||
+			clean.endsWith('!') ||
+			clean.endsWith('...') ||
+			clean.endsWith('…')
+		);
+	}
+
+	function calculatePause(durMs: number, count: number): number {
+		const audioBased = Math.round(durMs * 1.25);
+		const wordBased = count * 450;
+		const base = Math.max(audioBased, wordBased) + 800;
+		return Math.min(12000, Math.max(1800, base));
+	}
+
+	const sentences: LyricSentence[] = [];
+	let currentWords: WordToken[] = [];
+
+	for (let i = 0; i < words.length; i++) {
+		const word = words[i];
+		currentWords.push(word);
+
+		const isLast = i + 1 === words.length;
+		let shouldBreak = isLast;
+
+		if (!shouldBreak) {
+			const nextWord = words[i + 1];
+			if (endsWithTerminator(word.text)) {
+				shouldBreak = true;
+			} else if (nextWord.start_ms >= word.end_ms + 1200) {
+				shouldBreak = true;
+			} else if (currentWords.length >= 22 && /[,;\-]$/.test(word.text)) {
+				shouldBreak = true;
+			}
+		}
+
+		if (shouldBreak && currentWords.length > 0) {
+			const first = currentWords[0];
+			const last = currentWords[currentWords.length - 1];
+			const text = currentWords.map((w) => w.text).join(' ');
+			const start_ms = first.start_ms;
+			const end_ms = last.end_ms;
+			const duration_ms = Math.max(0, end_ms - start_ms);
+			const word_count = currentWords.length;
+			const suggested_pause_ms = calculatePause(duration_ms, word_count);
+
+			sentences.push({
+				id: sentences.length,
+				text,
+				start_ms,
+				end_ms,
+				duration_ms,
+				word_count,
+				suggested_pause_ms
+			});
+
+			currentWords = [];
+		}
+	}
+
+	return sentences;
+}
 
 
 

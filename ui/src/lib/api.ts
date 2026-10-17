@@ -1066,6 +1066,17 @@ export interface LyricLine {
 	romanized?: string;
 	romanized_words?: LyricWord[];
 }
+
+export interface LyricSentence {
+	id: number;
+	text: string;
+	start_ms: number;
+	end_ms: number;
+	duration_ms: number;
+	word_count: number;
+	suggested_pause_ms: number;
+}
+
 export interface Lyrics {
 	/** Attribution for the panel footer ("LRCLIB", "Source: Musixmatch", …). */
 	source: string;
@@ -1074,6 +1085,7 @@ export interface Lyrics {
 	synced: boolean;
 	instrumental: boolean;
 	lines: LyricLine[];
+	sentences?: LyricSentence[];
 	/** The source was picked by hand for this song (or its timing nudged). */
 	pinned: boolean;
 	/** Timing nudge in ms, positive = lyrics later. */
