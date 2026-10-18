@@ -2062,6 +2062,9 @@ fn is_clause_starter(w: &str) -> bool {
 }
 
 fn is_incomplete_ending(w: &str) -> bool {
+    if ends_with_sentence_terminator(w) {
+        return false;
+    }
     let clean = w.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase();
     matches!(
         clean.as_str(),
@@ -2130,11 +2133,31 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
         if let Some(line_words) = &line.words {
             if !line_words.is_empty() {
                 for lw in line_words {
-                    words.push(WordToken {
-                        text: lw.text.clone(),
-                        start_ms: lw.start_ms,
-                        end_ms: lw.end_ms,
-                    });
+                    let sub_tokens: Vec<&str> = lw.text.split_whitespace().collect();
+                    if sub_tokens.len() <= 1 {
+                        words.push(WordToken {
+                            text: lw.text.clone(),
+                            start_ms: lw.start_ms,
+                            end_ms: lw.end_ms,
+                        });
+                    } else {
+                        let num_sub_tokens = sub_tokens.len();
+                        let total_sub_dur = lw.end_ms.saturating_sub(lw.start_ms).max(num_sub_tokens as u64 * 150);
+                        let sub_dur = total_sub_dur / num_sub_tokens as u64;
+                        for (w_sub_idx, w_sub) in sub_tokens.into_iter().enumerate() {
+                            let w_sub_start = lw.start_ms + (w_sub_idx as u64 * sub_dur);
+                            let w_sub_end = if w_sub_idx + 1 == num_sub_tokens {
+                                lw.end_ms
+                            } else {
+                                w_sub_start + sub_dur
+                            };
+                            words.push(WordToken {
+                                text: w_sub.to_string(),
+                                start_ms: w_sub_start,
+                                end_ms: w_sub_end,
+                            });
+                        }
+                    }
                 }
                 continue;
             }
@@ -2197,11 +2220,16 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
             else if next_text.starts_with('-') || next_text.starts_with('—') || next_text.starts_with('>') {
                 should_break = true;
             }
-            // 3. Significant silence gap between speech (>= 1500ms)
+            // 3. Incomplete ending guard: NEVER break mid-phrase (e.g. after 'an', 'too', 'with', 'the')
+            // unless terminal punctuation or a speaker change occurred above
+            else if is_incomplete_ending(w_text) {
+                should_break = false;
+            }
+            // 4. Significant silence gap between speech (>= 1500ms)
             else if gap_ms >= 1500 {
                 should_break = true;
             }
-            // 4. Punctuated transcript:
+            // 5. Punctuated transcript:
             else if has_punctuation {
                 // Terminal punctuation (. ? ! ...) marks a complete sentence boundary
                 if ends_with_sentence_terminator(w_text) {
@@ -2219,7 +2247,7 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
                     }
                     // Only split if the next sentence terminator is far away (> 4 words),
                     // NEVER leaving an awkward 1-4 word orphan at the end
-                    if words_until_terminal > 4 && !is_incomplete_ending(w_text) {
+                    if words_until_terminal > 4 {
                         if gap_ms >= 300 || w_text.ends_with(',') || w_text.ends_with(';') {
                             should_break = true;
                         } else if gap_ms >= 600 {
@@ -2228,18 +2256,18 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
                     }
                 }
             }
-            // 5. Subtitles without terminal punctuation (e.g. pure raw ASR captions without periods):
+            // 6. Subtitles without terminal punctuation (e.g. pure raw ASR captions without periods):
             else {
-                // Break on natural speech breathing pause (>= 450ms) as long as not mid-phrase
-                if gap_ms >= 450 && !is_incomplete_ending(w_text) {
+                // Break on natural speech breathing pause (>= 450ms)
+                if gap_ms >= 450 {
                     should_break = true;
                 }
                 // Natural clause boundary after short pause (>= 250ms)
-                else if gap_ms >= 250 && is_clause_starter(next_text) && current_words.len() >= 5 && !is_incomplete_ending(w_text) {
+                else if gap_ms >= 250 && is_clause_starter(next_text) && current_words.len() >= 5 {
                     should_break = true;
                 }
                 // Working memory chunk limit (9-14 words) for comfortable shadowing
-                else if current_words.len() >= 9 && !is_incomplete_ending(w_text) {
+                else if current_words.len() >= 9 {
                     if gap_ms >= 200 || current_words.len() >= 14 {
                         should_break = true;
                     }
@@ -2667,6 +2695,133 @@ mod tests {
         assert_eq!(sentences[1].start_ms, 61840);
         assert_eq!(sentences[1].end_ms, 63950);
         assert_eq!(sentences[1].word_count, 9);
+    }
+
+    #[test]
+    fn test_incomplete_ending_never_cuts_hesitation() {
+        // Hesitation pause where speaker pauses 1.8 seconds after "an"
+        // "it will be because you are an ... asshole."
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(2500),
+                text: "it will be because you are an".into(),
+                words: Some(vec![
+                    LyricWord { text: "it".into(), start_ms: 1000, end_ms: 1200 },
+                    LyricWord { text: "will".into(), start_ms: 1200, end_ms: 1400 },
+                    LyricWord { text: "be".into(), start_ms: 1400, end_ms: 1600 },
+                    LyricWord { text: "because".into(), start_ms: 1600, end_ms: 1900 },
+                    LyricWord { text: "you".into(), start_ms: 1900, end_ms: 2100 },
+                    LyricWord { text: "are".into(), start_ms: 2100, end_ms: 2300 },
+                    LyricWord { text: "an".into(), start_ms: 2300, end_ms: 2500 },
+                ]),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(4300), // 1800ms gap after "an"
+                end_time_ms: Some(5000),
+                text: "asshole.".into(),
+                words: Some(vec![
+                    LyricWord { text: "asshole.".into(), start_ms: 4300, end_ms: 4900 },
+                ]),
+                ..Default::default()
+            },
+        ];
+
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 1);
+        assert_eq!(sentences[0].text, "it will be because you are an asshole.");
+        assert_eq!(sentences[0].word_count, 8);
+    }
+
+    #[test]
+    fn test_terminal_punctuation_precedence_on_short_words() {
+        // Words like "too." or "at?" that are in incomplete_ending list MUST break if punctuated!
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(2000),
+                text: "I want to go too. What are you looking at?".into(),
+                ..Default::default()
+            },
+        ];
+
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 2);
+        assert_eq!(sentences[0].text, "I want to go too.");
+        assert_eq!(sentences[1].text, "What are you looking at?");
+    }
+
+    #[test]
+    fn test_multiword_tokens_and_line_splitting() {
+        // Key & Peele style: uploaded whole line in single segment with line breaks
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(3000),
+                text: "All right, listen up, y'all.".into(),
+                words: Some(vec![
+                    LyricWord { text: "All right, listen up, y'all.".into(), start_ms: 1000, end_ms: 3000 },
+                ]),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(3200),
+                end_time_ms: Some(6000),
+                text: "I'm y'all's substitute teacher, Mr. Garvey.".into(),
+                ..Default::default()
+            },
+        ];
+
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 2);
+        assert_eq!(sentences[0].text, "All right, listen up, y'all.");
+        assert_eq!(sentences[0].word_count, 5);
+        assert_eq!(sentences[1].text, "I'm y'all's substitute teacher, Mr. Garvey.");
+        assert_eq!(sentences[1].word_count, 6);
+    }
+
+    #[test]
+    fn test_unpunctuated_asr_natural_chunking() {
+        // Auto-generated ASR with NO periods or question marks anywhere
+        // Should break on breathing gaps and clause starters without splitting incomplete endings
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(3500),
+                text: "we were walking down the street yesterday".into(),
+                words: Some(vec![
+                    LyricWord { text: "we".into(), start_ms: 1000, end_ms: 1300 },
+                    LyricWord { text: "were".into(), start_ms: 1300, end_ms: 1600 },
+                    LyricWord { text: "walking".into(), start_ms: 1600, end_ms: 2100 },
+                    LyricWord { text: "down".into(), start_ms: 2100, end_ms: 2500 },
+                    LyricWord { text: "the".into(), start_ms: 2500, end_ms: 2700 },
+                    LyricWord { text: "street".into(), start_ms: 2700, end_ms: 3100 },
+                    LyricWord { text: "yesterday".into(), start_ms: 3100, end_ms: 3500 },
+                ]),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(4200), // 700ms breathing pause
+                end_time_ms: Some(7000),
+                text: "and then we saw this incredible show".into(),
+                words: Some(vec![
+                    LyricWord { text: "and".into(), start_ms: 4200, end_ms: 4400 },
+                    LyricWord { text: "then".into(), start_ms: 4400, end_ms: 4700 },
+                    LyricWord { text: "we".into(), start_ms: 4700, end_ms: 5000 },
+                    LyricWord { text: "saw".into(), start_ms: 5000, end_ms: 5500 },
+                    LyricWord { text: "this".into(), start_ms: 5500, end_ms: 5800 },
+                    LyricWord { text: "incredible".into(), start_ms: 5800, end_ms: 6400 },
+                    LyricWord { text: "show".into(), start_ms: 6400, end_ms: 6900 },
+                ]),
+                ..Default::default()
+            },
+        ];
+
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 2);
+        assert_eq!(sentences[0].text, "we were walking down the street yesterday");
+        assert_eq!(sentences[1].text, "and then we saw this incredible show");
     }
 
     /// Are the external providers still alive? Hits them all for real, so it is NOT in the default

@@ -186,6 +186,7 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 	}
 
 	function isIncompleteEnding(w: string): boolean {
+		if (endsWithTerminator(w)) return false;
 		const clean = w.replace(/[^a-zA-Z]/g, '').toLowerCase();
 		const set = new Set([
 			'a', 'an', 'the',
@@ -232,11 +233,26 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 
 		if (line.words && line.words.length > 0) {
 			for (const lw of line.words) {
-				words.push({
-					text: lw.text,
-					start_ms: lw.start_ms,
-					end_ms: lw.end_ms
-				});
+				const subTokens = lw.text.trim().split(/\s+/).filter(Boolean);
+				if (subTokens.length <= 1) {
+					words.push({
+						text: lw.text,
+						start_ms: lw.start_ms,
+						end_ms: lw.end_ms
+					});
+				} else {
+					const totalSubDur = Math.max(subTokens.length * 150, lw.end_ms - lw.start_ms);
+					const subDur = Math.floor(totalSubDur / subTokens.length);
+					for (let sIdx = 0; sIdx < subTokens.length; sIdx++) {
+						const sStart = lw.start_ms + (sIdx * subDur);
+						const sEnd = (sIdx + 1 === subTokens.length) ? lw.end_ms : (sStart + subDur);
+						words.push({
+							text: subTokens[sIdx],
+							start_ms: sStart,
+							end_ms: sEnd
+						});
+					}
+				}
 			}
 			continue;
 		}
@@ -285,11 +301,16 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 			else if (nextText.startsWith('-') || nextText.startsWith('—') || nextText.startsWith('>')) {
 				shouldBreak = true;
 			}
-			// 3. Significant silence gap between speech (>= 1500ms)
+			// 3. Incomplete ending guard: NEVER break mid-phrase (e.g. after 'an', 'too', 'with', 'the')
+			// unless terminal punctuation or a speaker change occurred above
+			else if (isIncompleteEnding(wText)) {
+				shouldBreak = false;
+			}
+			// 4. Significant silence gap between speech (>= 1500ms)
 			else if (gapMs >= 1500) {
 				shouldBreak = true;
 			}
-			// 4. Punctuated transcript:
+			// 5. Punctuated transcript:
 			else if (hasPunctuation) {
 				// Terminal punctuation marks complete sentence boundary
 				if (endsWithTerminator(wText)) {
@@ -306,7 +327,7 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 					}
 					// Only split if terminal punctuation is far away (> 4 words),
 					// NEVER leaving an awkward 1-4 word orphan at the end
-					if (wordsUntilTerminal > 4 && !isIncompleteEnding(wText)) {
+					if (wordsUntilTerminal > 4) {
 						if (gapMs >= 300 || wText.endsWith(',') || wText.endsWith(';')) {
 							shouldBreak = true;
 						} else if (gapMs >= 600) {
@@ -315,18 +336,18 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 					}
 				}
 			}
-			// 5. Unpunctuated transcript (pure raw ASR without periods):
+			// 6. Unpunctuated transcript (pure raw ASR without periods):
 			else {
-				// Break on natural speech breathing pause (>= 450ms) as long as not mid-phrase
-				if (gapMs >= 450 && !isIncompleteEnding(wText)) {
+				// Break on natural speech breathing pause (>= 450ms)
+				if (gapMs >= 450) {
 					shouldBreak = true;
 				}
 				// Natural clause boundary after short pause (>= 250ms)
-				else if (gapMs >= 250 && isClauseStarter(nextText) && currentWords.length >= 5 && !isIncompleteEnding(wText)) {
+				else if (gapMs >= 250 && isClauseStarter(nextText) && currentWords.length >= 5) {
 					shouldBreak = true;
 				}
 				// Working memory chunk limit (9-14 words) for comfortable shadowing
-				else if (currentWords.length >= 9 && !isIncompleteEnding(wText)) {
+				else if (currentWords.length >= 9) {
 					if (gapMs >= 200 || currentWords.length >= 14) {
 						shouldBreak = true;
 					}
