@@ -63,10 +63,21 @@ pub async fn get_channel_videos(state: St<'_>, channel_id: String) -> Result<Vec
     crate::videos::get_channel_videos(&state.db, &channel_id).await
 }
 
+/// Fetch personalized home recommendations from YouTube (with dynamic category chips or continuation)
+#[tauri::command]
+pub async fn get_youtube_video_feed(
+    state: St<'_>,
+    continuation: Option<String>,
+) -> Result<crate::videos::VideoFeedPage, String> {
+    let client = metadata_client(&state).ok();
+    crate::videos::get_youtube_video_feed(&state.db, continuation.as_deref(), Some(&state.it), client).await
+}
+
 /// Fetch personalized home recommendations from YouTube
 #[tauri::command]
 pub async fn get_youtube_recommendations(state: St<'_>) -> Result<Vec<SongItem>, String> {
-    crate::videos::get_youtube_recommendations(&state.db).await
+    let client = metadata_client(&state).ok();
+    crate::videos::get_youtube_recommendations(&state.db, Some(&state.it), client).await
 }
 
 /// Fetch curated non-music trending/popular videos by category
@@ -294,6 +305,29 @@ pub async fn ai_explain_word(
         user_prompt,
     };
     crate::ai::query_ai_immersion(&state.db, req).await
+}
+
+#[tauri::command]
+pub async fn get_transcript_settings(state: St<'_>) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "apiKey": state.db.get_setting("freetranscript_api_key").unwrap_or_default(),
+        "proxyUrl": state.db.get_setting("transcript_proxy_url").unwrap_or_default(),
+    }))
+}
+
+#[tauri::command]
+pub async fn set_transcript_settings(
+    state: St<'_>,
+    api_key: Option<String>,
+    proxy_url: Option<String>,
+) -> Result<(), String> {
+    if let Some(k) = api_key {
+        state.db.set_setting("freetranscript_api_key", k.trim());
+    }
+    if let Some(u) = proxy_url {
+        state.db.set_setting("transcript_proxy_url", u.trim());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2695,7 +2729,7 @@ pub async fn release_notes() -> Result<Vec<ReleaseNote>, String> {
         prerelease: bool,
     }
     let releases: Vec<GhRelease> = crate::http::client()
-        .get("https://api.github.com/repos/SimoHypers/limusic/releases?per_page=20")
+        .get("https://api.github.com/repos/quiqxiq/immersio/releases?per_page=20")
         .header("User-Agent", concat!("Limusic/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/vnd.github+json")
         .timeout(std::time::Duration::from_secs(15))
@@ -2752,7 +2786,7 @@ pub fn can_self_update(app: tauri::AppHandle) -> bool {
 /// the release workflows move it to the newest release candidate, or to the newest release once that
 /// is ahead, so the URL never changes.
 const BETA_MANIFEST: &str =
-    "https://github.com/SimoHypers/limusic/releases/download/beta/latest.json";
+    "https://github.com/quiqxiq/immersio/releases/download/beta/latest.json";
 
 /// What the updater plugin's own `check` command returns, so the UI can wrap it in the plugin's
 /// `Update` class and install it the usual way.

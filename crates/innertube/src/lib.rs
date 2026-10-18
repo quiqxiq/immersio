@@ -21,7 +21,7 @@ pub use clients::{
 };
 pub use comments_session::{ActionError, CommentsSession, Provenance};
 pub use models::browse::{
-    AlbumPage, ArtistCarousel, ArtistPage, BrowseItem, HistoryGroup, HomePage, Mood, MoodSection,
+    AlbumPage, ArtistCarousel, ArtistPage, BrowseItem, HistoryGroup, HomeChip, HomePage, Mood, MoodSection,
     PlaylistContinuation, PlaylistPage, PlaylistSort, PlaylistSuggestions, QuerySuggestion,
     SearchResults, SearchSuggestions, Section, SortMenu,
 };

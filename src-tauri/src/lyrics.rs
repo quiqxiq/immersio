@@ -750,7 +750,7 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
     None
 }
 
-async fn fetch_caption_body(caption_url: &str) -> Option<String> {
+async fn fetch_caption_body(caption_url: &str, cookie: Option<&str>) -> Option<String> {
     static RE_FMT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re_fmt = RE_FMT.get_or_init(|| regex::Regex::new(r"([?&])fmt=[^&]*").unwrap());
     let json_url = if re_fmt.is_match(caption_url) {
@@ -760,23 +760,36 @@ async fn fetch_caption_body(caption_url: &str) -> Option<String> {
     } else {
         format!("{caption_url}?fmt=json3")
     };
+    let srv3_url = if re_fmt.is_match(caption_url) {
+        re_fmt.replace_all(caption_url, "$1fmt=srv3").to_string()
+    } else if caption_url.contains('?') {
+        format!("{caption_url}&fmt=srv3")
+    } else {
+        format!("{caption_url}?fmt=srv3")
+    };
 
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
         .build()
         .unwrap_or_else(|_| crate::http::client().clone());
 
+    let cookie_val = cookie.map(|s| s.to_string());
     let try_fetch = |url: &str| {
         let http = http.clone();
         let url = url.to_owned();
+        let cookie_val = cookie_val.clone();
         async move {
-            let resp = http
+            let mut req = http
                 .get(&url)
                 .header(reqwest::header::USER_AGENT, crate::http::WEB_UA)
                 .header(reqwest::header::REFERER, "https://www.youtube.com/")
-                .send()
-                .await
-                .ok()?;
+                .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+            if let Some(c) = &cookie_val {
+                if !c.is_empty() {
+                    req = req.header(reqwest::header::COOKIE, c);
+                }
+            }
+            let resp = req.send().await.ok()?;
             if !resp.status().is_success() {
                 return None;
             }
@@ -793,8 +806,150 @@ async fn fetch_caption_body(caption_url: &str) -> Option<String> {
         return Some(txt);
     }
 
+    if let Some(txt) = try_fetch(&srv3_url).await {
+        return Some(txt);
+    }
+
     if let Some(txt) = try_fetch(caption_url).await {
         return Some(txt);
+    }
+
+    None
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct FreeTranscriptSegment {
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    start: Option<f64>,
+    #[serde(default)]
+    duration: Option<f64>,
+    #[serde(default, rename = "startMs")]
+    start_ms: Option<u64>,
+    #[serde(default, rename = "endMs")]
+    end_ms: Option<u64>,
+    #[serde(default)]
+    offset: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FreeTranscriptResponse {
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    transcript: Vec<FreeTranscriptSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CloudTranscriptPayload {
+    Object(FreeTranscriptResponse),
+    Array(Vec<FreeTranscriptSegment>),
+}
+
+async fn try_fetch_cloud_transcript_url(
+    url: &str,
+    api_key: Option<&str>,
+) -> Option<Lyrics> {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .unwrap_or_else(|_| crate::http::client().clone());
+
+    let mut req = http
+        .get(url)
+        .header(reqwest::header::USER_AGENT, crate::http::WEB_UA)
+        .header(reqwest::header::ACCEPT, "application/json");
+
+    if let Some(key) = api_key {
+        req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"));
+    }
+
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let payload: CloudTranscriptPayload = resp.json().await.ok()?;
+    let (lang, segments) = match payload {
+        CloudTranscriptPayload::Object(obj) => (obj.language, obj.transcript),
+        CloudTranscriptPayload::Array(arr) => (None, arr),
+    };
+
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::with_capacity(segments.len());
+    for item in segments {
+        let clean_text = unescape_xml_entities(&item.text).trim().to_string();
+        if clean_text.is_empty() {
+            continue;
+        }
+
+        let start_ms = item
+            .start_ms
+            .or_else(|| item.offset)
+            .or_else(|| item.start.map(|s| (s * 1000.0).round() as u64))
+            .unwrap_or(0);
+
+        let dur_ms = item
+            .duration
+            .map(|d| (d * 1000.0).round() as u64)
+            .or_else(|| item.end_ms.map(|e| e.saturating_sub(start_ms)));
+
+        push_split_dialogue_cues(&mut lines, start_ms, dur_ms, &clean_text);
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let sentences = reconstruct_sentences(&lines);
+    let lang_str = lang.map(|l| format!(" ({l})")).unwrap_or_default();
+    Some(Lyrics {
+        source: format!("YouTube Subtitles{lang_str}"),
+        synced: true,
+        sentences: Some(sentences),
+        lines,
+        ..Default::default()
+    })
+}
+
+async fn fetch_cloud_transcript(state: &AppState, video_id: &str) -> Option<Lyrics> {
+    let api_key = state
+        .db
+        .get_setting("freetranscript_api_key")
+        .filter(|s| !s.is_empty());
+    let proxy_url = state
+        .db
+        .get_setting("transcript_proxy_url")
+        .filter(|s| !s.is_empty());
+
+    // 1. Check user-configured proxy URL first
+    if let Some(proxy) = proxy_url {
+        let url = if proxy.contains("{video_id}") {
+            proxy.replace("{video_id}", video_id)
+        } else if proxy.contains('?') {
+            format!("{proxy}&video_url={video_id}")
+        } else {
+            format!("{proxy}?video_url={video_id}")
+        };
+        if let Some(lyrics) = try_fetch_cloud_transcript_url(&url, api_key.as_deref()).await {
+            tracing::info!(video_id = video_id, "Retrieved transcript from custom proxy");
+            return Some(lyrics);
+        }
+    }
+
+    // 2. Query FreeTranscriptAPI
+    let url = format!("https://api.freetranscriptapi.com/v1/transcript?video_url={video_id}");
+    if let Some(lyrics) = try_fetch_cloud_transcript_url(&url, api_key.as_deref()).await {
+        tracing::info!(
+            video_id = video_id,
+            "Retrieved transcript from FreeTranscriptAPI cloud extractor"
+        );
+        return Some(lyrics);
     }
 
     None
@@ -830,6 +985,8 @@ async fn youtube_get(
         }
     }
 
+    let session_cookie = state.db.get_setting("session_cookie").filter(|s| !s.is_empty());
+
     // 2. Next, check Closed Captions (subtitles) from YouTube player endpoint.
     // Query active clients: VISIONOS and TVHTML5_SIMPLY, then WEB_REMIX.
     let caption_clients = [
@@ -842,11 +999,11 @@ async fn youtube_get(
             if let Ok(resp) = state.it.player(client, &req.video_id, None, None, None).await {
                 if let Some(captions) = &resp.captions {
                     if let Some((caption_url, label)) = captions.best_caption() {
-                        let mut body_text = fetch_caption_body(&caption_url).await;
+                        let mut body_text = fetch_caption_body(&caption_url, session_cookie.as_deref()).await;
                         // If auto-translation failed (&tlang=en), fallback to the original native caption track URL
                         if body_text.is_none() && caption_url.contains("&tlang=") {
                             let clean_url = caption_url.split("&tlang=").next().unwrap_or(&caption_url);
-                            body_text = fetch_caption_body(clean_url).await;
+                            body_text = fetch_caption_body(clean_url, session_cookie.as_deref()).await;
                         }
                         if let Some(body_text) = body_text {
                             if let Some(lyrics) = parse_caption_body(&body_text, &label) {
@@ -869,13 +1026,19 @@ async fn youtube_get(
             .or_else(|| subs.first());
 
         if let Some(sub) = best_sub {
-            if let Some(body_text) = fetch_caption_body(&sub.url).await {
+            if let Some(body_text) = fetch_caption_body(&sub.url, session_cookie.as_deref()).await {
                 let label = &sub.name;
                 if let Some(lyrics) = parse_caption_body(&body_text, label) {
                     return Ok(Some(lyrics));
                 }
             }
         }
+    }
+
+    // 2c. Resilient cloud transcript fallback
+    // Triggered when direct YouTube timedtext is blocked with 429/bot detection or empty
+    if let Some(cloud_lyrics) = fetch_cloud_transcript(state, &req.video_id).await {
+        return Ok(Some(cloud_lyrics));
     }
 
     // 3. Fallback to plain text under YouTube's attribution
@@ -2325,6 +2488,52 @@ mod tests {
         assert_eq!(lines[0].time_ms, Some(27930));
         assert_eq!(lines[0].text, "Listen to the wind blow");
         assert_eq!(lines[1].time_ms, Some(31160));
+    }
+
+    #[test]
+    fn test_parse_cloud_transcript_json() {
+        let sample_json = r#"{
+            "language": "en",
+            "title": "Sample Movie Scene",
+            "transcript": [
+                {
+                    "text": "Mark I&#39;m not speaking in code Erica",
+                    "start": 0.24,
+                    "duration": 5.0
+                },
+                {
+                    "text": "you&#39;re obsessed with finals clubs you",
+                    "start": 5.24,
+                    "duration": 3.16
+                }
+            ]
+        }"#;
+
+        let payload: CloudTranscriptPayload = serde_json::from_str(sample_json).unwrap();
+        let (lang, segments) = match payload {
+            CloudTranscriptPayload::Object(obj) => (obj.language, obj.transcript),
+            CloudTranscriptPayload::Array(arr) => (None, arr),
+        };
+        assert_eq!(lang.as_deref(), Some("en"));
+        assert_eq!(segments.len(), 2);
+
+        let mut lines = Vec::new();
+        for item in segments {
+            let clean = unescape_xml_entities(&item.text).trim().to_string();
+            let start_ms = item.start.map(|s| (s * 1000.0).round() as u64).unwrap_or(0);
+            let dur_ms = item.duration.map(|d| (d * 1000.0).round() as u64);
+            push_split_dialogue_cues(&mut lines, start_ms, dur_ms, &clean);
+        }
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text, "Mark I'm not speaking in code Erica");
+        assert_eq!(lines[0].time_ms, Some(240));
+        assert_eq!(lines[0].end_time_ms, Some(5240));
+        assert_eq!(lines[1].text, "you're obsessed with finals clubs you");
+        assert_eq!(lines[1].time_ms, Some(5240));
+
+        let sentences = reconstruct_sentences(&lines);
+        assert!(!sentences.is_empty());
     }
 
     #[test]

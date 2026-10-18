@@ -938,6 +938,34 @@ export function noteHomeSections(titles: string[]) {
 	if (pl.noteSections(personal, titles)) savePersonal();
 }
 
+export function saveVideos(patch: Partial<pl.VideosLayout>) {
+	personal.videos = { ...personal.videos, ...patch };
+	savePersonal();
+}
+
+export function resetVideos() {
+	pl.resetVideos(personal);
+	savePersonal();
+}
+
+export function noteVideoSections(titles: string[]) {
+	if (pl.noteVideoSections(personal, titles)) savePersonal();
+}
+
+export function saveShadowing(patch: Partial<pl.ShadowingLayout>) {
+	personal.shadowing = { ...personal.shadowing, ...patch };
+	savePersonal();
+}
+
+export function resetShadowing() {
+	pl.resetShadowing(personal);
+	savePersonal();
+}
+
+export function noteShadowingSections(titles: string[]) {
+	if (pl.noteShadowingSections(personal, titles)) savePersonal();
+}
+
 /** Called from every card click app-wide, so only persist when the id was actually on the grid. */
 export function touchPick(id: string) {
 	if (pl.touchPick(personal, id)) savePersonal();

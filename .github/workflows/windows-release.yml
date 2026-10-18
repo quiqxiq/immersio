@@ -307,6 +307,14 @@ jobs:
           BUNDLES=(); [ "$PRERELEASE" = false ] || BUNDLES=(--bundles nsis)
           tauri build "${BUNDLES[@]}" --config '{"build":{"beforeBuildCommand":""}}'   # → target/release/bundle/{nsis,msi}/
 
+          # Package Windows portable zip
+          echo "==> Packaging portable Windows zip..."
+          mkdir -p target/release/bundle/portable
+          find target/release -maxdepth 1 -name "*.exe" ! -name "*build-script*" -exec cp {} target/release/bundle/portable/ \;
+          [ -f "src-tauri/libmpv-2.dll" ] && cp src-tauri/libmpv-2.dll target/release/bundle/portable/
+          [ -f "$MPV_DIR/libmpv-2.dll" ] && cp "$MPV_DIR/libmpv-2.dll" target/release/bundle/portable/
+          7z a "target/release/bundle/Immersio_${VERSION}_windows_x64_portable.zip" ./target/release/bundle/portable/*
+
       - name: Dry run — built and signed, attaching nothing
         if: ${{ inputs.dry_run }}
         shell: bash
@@ -412,18 +420,20 @@ jobs:
           RELEASE_ID="$(retry 3 gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)"
           [ -n "$RELEASE_ID" ] || { echo "::error::no release found for $TAG"; exit 1; }
 
-          EXE="target/release/bundle/nsis/limusic_${VERSION}_x64-setup.exe"
-          SIG="$EXE.sig"
-          MSI="$(ls target/release/bundle/msi/limusic_${VERSION}_*.msi 2>/dev/null | head -1 || true)"
+          EXE="$(find target/release/bundle/nsis -maxdepth 1 -type f -name "*-setup.exe" 2>/dev/null | head -1 || true)"
+          [ -n "$EXE" ] || EXE="$(find target/release/bundle/nsis -maxdepth 1 -type f -name "*.exe" 2>/dev/null | head -1 || true)"
+          SIG="${EXE}.sig"
+          MSI="$(find target/release/bundle/msi -maxdepth 1 -type f -name "*.msi" 2>/dev/null | head -1 || true)"
+          ZIP="$(find target/release/bundle -maxdepth 1 -type f -name "*portable.zip" 2>/dev/null | head -1 || true)"
 
           if [ ! -f "$EXE" ]; then
-            echo "::error::expected installer not found: $EXE"; find target/release/bundle -maxdepth 2; exit 1
+            echo "::error::expected installer not found"; find target/release/bundle -maxdepth 2; exit 1
           fi
           if [ ! -f "$SIG" ]; then
             echo "::error::no .sig next to the installer — signing key missing, or createUpdaterArtifacts got turned off"; exit 1
           fi
 
-          retry 5 upload "$EXE" "$SIG" ${MSI:+"$MSI"}
+          retry 5 upload "$EXE" "$SIG" ${MSI:+"$MSI"} ${ZIP:+"$ZIP"}
 
           # latest.json is the one thing both release workflows write, and they now run in parallel.
           # There is no compare-and-swap on release assets, so: merge, upload, read back, and retry

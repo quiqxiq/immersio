@@ -199,7 +199,7 @@
 				version,
 				system
 			});
-			await api.openExternal(`https://github.com/SimoHypers/limusic/issues/new?${q}`);
+			await api.openExternal(`https://github.com/quiqxiq/immersio/issues/new?${q}`);
 		} catch (e) {
 			diagError = String(e);
 		}

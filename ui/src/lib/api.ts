@@ -1446,6 +1446,12 @@ export const aiExplainWord = (
 		userPrompt
 	});
 
+export const getTranscriptSettings = () =>
+	invoke<{ apiKey: string; proxyUrl: string }>('get_transcript_settings');
+
+export const setTranscriptSettings = (apiKey?: string, proxyUrl?: string) =>
+	invoke<void>('set_transcript_settings', { apiKey, proxyUrl });
+
 export const getOpenRouterToken = () =>
 	invoke<string | null>('get_openrouter_token');
 
@@ -1478,6 +1484,15 @@ export const getSubscribedChannels = () =>
 
 export const getChannelVideos = (channelId: string) =>
 	invoke<SongItem[]>('get_channel_videos', { channelId });
+
+export interface VideoFeedPage {
+	chips: HomeChip[];
+	videos: SongItem[];
+	continuation?: string;
+}
+
+export const getYoutubeVideoFeed = (continuation?: string) =>
+	invoke<VideoFeedPage>('get_youtube_video_feed', { continuation: continuation || null });
 
 export const getYoutubeRecommendations = () =>
 	invoke<SongItem[]>('get_youtube_recommendations');

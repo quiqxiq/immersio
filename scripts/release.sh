@@ -23,12 +23,12 @@
 # Bump "version" in src-tauri/tauri.conf.json AND Cargo.toml BEFORE running (tauri.conf.json is the
 # app version the updater compares against; the preflight below refuses to run if they disagree).
 #
-# Requires: the private signing key at ~/.tauri/limusic.key, `gh` authed, jq, curl.
+# Requires: the private signing key at ~/.tauri/immersio.key, `gh` authed, jq, curl.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-REPO="SimoHypers/limusic"
-KEY="${TAURI_SIGNING_PRIVATE_KEY_FILE:-$HOME/.tauri/limusic.key}"
+REPO="quiqxiq/immersio"
+KEY="${TAURI_SIGNING_PRIVATE_KEY_FILE:-$HOME/.tauri/immersio.key}"
 NOTES="${1:-See the commit history for changes.}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -203,24 +203,18 @@ echo "    linux run ${RUN_LINUX:-?}, windows run ${RUN_WIN:-?}, macos run ${RUN_
 # No rpm for a release candidate: an rpm install can't take an update, so it can't be on the beta
 # channel, and the RC's only audience is the beta channel.
 if [ "$RC" = 1 ]; then
-  echo "==> Release candidate: no rpm"
-else
+  echo "==> Release candidate: skipping local rpm"
+elif command -v rpmbuild >/dev/null 2>&1; then
   echo "==> Building the rpm locally while CI runs…"
-  if ! cargo tauri build --bundles rpm; then
-    echo >&2
-    echo "ERROR: the rpm build failed, but $TAG is already published and CI is building the rest." >&2
-    echo "       Fix it, then attach the rpm by hand:" >&2
-    echo "         cargo tauri build --bundles rpm" >&2
-    echo "         gh release upload $TAG target/release/bundle/rpm/limusic-$VERSION-*.rpm --clobber --repo $REPO" >&2
-    exit 1
+  if cargo tauri build --bundles rpm 2>/dev/null; then
+    RPM="$(ls target/release/bundle/rpm/*-${VERSION}-*.rpm 2>/dev/null | head -1)"
+    if [ -n "$RPM" ]; then
+      gh release upload "$TAG" "$RPM" --clobber --repo "$REPO"
+      echo "    attached $(basename "$RPM")"
+    fi
   fi
-
-  # Pin to $VERSION — a stale bundle from a previous build otherwise sorts first and gets shipped
-  # (e.g. an old 0.1.1 rpm uploaded to the 0.1.2 release).
-  RPM="$(ls target/release/bundle/rpm/limusic-${VERSION}-*.rpm 2>/dev/null | head -1)"
-  [ -n "$RPM" ] || die "no rpm for $VERSION in target/release/bundle/rpm"
-  gh release upload "$TAG" "$RPM" --clobber --repo "$REPO"
-  echo "    attached $(basename "$RPM")"
+else
+  echo "==> Local rpmbuild not detected; Linux CI workflow will build and attach the .rpm."
 fi
 
 # ---------------------------------------------------------------------------

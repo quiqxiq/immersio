@@ -217,8 +217,11 @@ jobs:
           # to the filesystem.
           tauri build --bundles app --config \
             '{"build":{"beforeBuildCommand":""},"bundle":{"createUpdaterArtifacts":false}}'
-          [ -d "target/release/bundle/macos/limusic.app" ] \
-            || { echo "::error::no .app at target/release/bundle/macos/limusic.app"; find target/release/bundle -maxdepth 2; exit 1; }
+          APP="$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)"
+          [ -n "$APP" ] && [ -d "$APP" ] \
+            || { echo "::error::no .app found in target/release/bundle/macos"; find target/release/bundle -maxdepth 2; exit 1; }
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "APP_NAME=$(basename "$APP")" >> "$GITHUB_ENV"
 
       # THE step this workflow exists for. dylibbundler walks the binary's dependency graph, copies
       # every non-system dylib into Contents/Frameworks and rewrites the install names to
@@ -234,7 +237,7 @@ jobs:
         timeout-minutes: 6
         run: |
           set -euo pipefail
-          APP=target/release/bundle/macos/limusic.app
+          APP="${APP:-$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)}"
           # The executable inside the bundle is NOT named after the bundle: productName names the
           # .app, the cargo package names the binary (limusic-app). Ask the bundle rather than
           # guessing, so a rename of either can't quietly break this.
@@ -257,7 +260,7 @@ jobs:
       - name: Drop the duplicate rpaths dylibbundler leaves behind
         run: |
           set -euo pipefail
-          APP=target/release/bundle/macos/limusic.app
+          APP="${APP:-$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)}"
           find "$APP" -type f -print0 | while IFS= read -r -d '' f; do
             # `otool -l` on a non-Mach-O file just prints nothing useful, so no file-type test is
             # needed; the awk below yields no rpaths and the inner loop does nothing.
@@ -293,7 +296,7 @@ jobs:
       - name: Re-sign the bundle
         run: |
           set -euo pipefail
-          APP=target/release/bundle/macos/limusic.app
+          APP="${APP:-$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)}"
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -304,7 +307,7 @@ jobs:
       - name: Check no Mach-O lists a duplicate rpath
         run: |
           set -euo pipefail
-          APP=target/release/bundle/macos/limusic.app
+          APP="${APP:-$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)}"
           # No `|| true` here, unlike the Homebrew guard: that one needs it because grep exits 1 on
           # every clean file, whereas uniq -d exits 0, so a non-zero pipeline here means otool
           # could not read the file. errexit does not reach inside a command substitution (and
@@ -334,7 +337,7 @@ jobs:
       - name: Check nothing still links to Homebrew
         run: |
           set -euo pipefail
-          APP=target/release/bundle/macos/limusic.app
+          APP="${APP:-$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)}"
           # [[:space:]], not \s: this runs under BSD grep, whose POSIX regex has no \s, and a
           # pattern that quietly matches nothing is worse than no guard at all.
           #
@@ -368,12 +371,14 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set, the build would produce an unsignable update"
             exit 1
           fi
-          TAR="target/release/bundle/macos/limusic_${VERSION}_aarch64.app.tar.gz"
+          APP="${APP:-$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)}"
+          APP_NAME="$(basename "$APP")"
+          TAR="target/release/bundle/macos/Immersio_${VERSION}_aarch64.app.tar.gz"
           # cd into the bundle dir rather than `tar -C`, so there is no question about whether the
           # archive path is resolved before or after the chdir. The archive must contain the .app
           # at its root: that is what the updater extracts over the installed one.
           (cd target/release/bundle/macos \
-            && COPYFILE_DISABLE=1 tar -czf "limusic_${VERSION}_aarch64.app.tar.gz" limusic.app)
+            && COPYFILE_DISABLE=1 tar -czf "Immersio_${VERSION}_aarch64.app.tar.gz" "$APP_NAME")
           tauri signer sign "$TAR"
           [ -f "$TAR.sig" ] || { echo "::error::tauri signer produced no .sig for $TAR"; exit 1; }
           echo "TAR=$TAR" >> "$GITHUB_ENV"
@@ -387,8 +392,9 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/roundtrip && mkdir -p /tmp/roundtrip
           tar -xzf "$TAR" -C /tmp/roundtrip
-          codesign --verify --deep --strict --verbose=2 /tmp/roundtrip/limusic.app
-          test -x "/tmp/roundtrip/limusic.app/Contents/MacOS/$EXECUTABLE"
+          APP_NAME="${APP_NAME:-Immersio.app}"
+          codesign --verify --deep --strict --verbose=2 "/tmp/roundtrip/$APP_NAME"
+          test -x "/tmp/roundtrip/$APP_NAME/Contents/MacOS/$EXECUTABLE"
           echo "the extracted bundle verifies and its binary is executable"
 
       # hdiutil rather than tauri's dmg bundler: that one drives AppleScript to lay the window out
@@ -397,14 +403,15 @@ jobs:
       - name: Build the DMG
         run: |
           set -euo pipefail
-          APP=target/release/bundle/macos/limusic.app
-          DMG="target/release/bundle/dmg/limusic_${VERSION}_aarch64.dmg"
-          STAGE="$(mktemp -d)/Limusic"
+          APP="${APP:-$(find target/release/bundle/macos -maxdepth 1 -type d -name "*.app" | head -1)}"
+          APP_NAME="$(basename "$APP")"
+          DMG="target/release/bundle/dmg/Immersio_${VERSION}_aarch64.dmg"
+          STAGE="$(mktemp -d)/Immersio"
           mkdir -p "$STAGE" "$(dirname "$DMG")"
           # ditto, not cp: it is the copy that preserves a bundle's metadata and signature intact.
-          ditto "$APP" "$STAGE/limusic.app"
+          ditto "$APP" "$STAGE/$APP_NAME"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname "Limusic" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          hdiutil create -volname "Immersio" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
           echo "DMG=$DMG" >> "$GITHUB_ENV"
           echo "dmg: $(du -h "$DMG" | cut -f1)"
 

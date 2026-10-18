@@ -32,7 +32,8 @@
 set -uo pipefail
 
 APPDIR=/app
-BIN="$APPDIR/usr/bin/limusic-app"
+BIN="$(find "$APPDIR/usr/bin" -maxdepth 1 -type f -executable | head -1)"
+[ -n "$BIN" ] || BIN="$APPDIR/usr/bin/limusic-app"
 FAIL=0
 step() { printf '\n── %s\n' "$1"; }
 bad()  { echo "   FAIL: $1"; FAIL=1; }

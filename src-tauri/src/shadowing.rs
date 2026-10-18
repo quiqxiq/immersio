@@ -250,9 +250,10 @@ async fn fetch_latest_videos(
     channel_name: &str,
     target: usize,
     max_pages: usize,
+    visitor_data: Option<&str>,
 ) -> (Vec<SongItem>, Option<String>) {
     // First page: the Videos tab itself (sorted by Latest by default)
-    let data = match crate::videos::post_browse(cookie, channel_id, Some("EgZ2aWRlb3PyBgQKAjoA")).await {
+    let data = match crate::videos::post_browse(cookie, channel_id, Some("Egl2aWRlb3PyBgQKAjoA"), visitor_data).await {
         Ok(d) => d,
         Err(_) => return (Vec::new(), None),
     };
@@ -292,6 +293,7 @@ pub async fn fetch_channel_scenes(
     cookie: &str,
     channel_id: &str,
     channel_name: &str,
+    visitor_data: Option<&str>,
 ) -> Result<Vec<SongItem>, String> {
     const POPULAR_TARGET: usize = 30;
     const LATEST_TARGET: usize = 20;
@@ -299,7 +301,7 @@ pub async fn fetch_channel_scenes(
 
     // 1. Fetch Latest videos + extract Popular token
     let (latest_videos, pop_token) = fetch_latest_videos(
-        cookie, channel_id, channel_name, LATEST_TARGET, MAX_PAGES,
+        cookie, channel_id, channel_name, LATEST_TARGET, MAX_PAGES, visitor_data,
     ).await;
 
     // 2. Fetch Popular videos using continuation token
@@ -340,6 +342,7 @@ pub async fn get_shadowing_scenes(
         .unwrap_or_default()
         .trim()
         .to_string();
+    let visitor_data = db.get_setting("visitor_data").filter(|s| !s.is_empty());
 
     // If custom search query is provided
     if let Some(q) = query {
@@ -368,24 +371,28 @@ pub async fn get_shadowing_scenes(
     // Check if category matches a known channel
     for ch in CHANNELS {
         if ch.slug == category {
-            return fetch_channel_scenes(&cookie, ch.channel_id, ch.label).await;
+            return fetch_channel_scenes(&cookie, ch.channel_id, ch.label, visitor_data.as_deref()).await;
         }
     }
 
-    // "all" / default: fetch top scenes from every channel concurrently-ish, merge & dedup
+    // "all" / default: fetch top scenes from every channel concurrently, merge & dedup
     if category == "all" {
+        let fetches = CHANNELS.iter().map(|ch| {
+            let c_ref = &cookie;
+            let vd_ref = visitor_data.as_deref();
+            async move {
+                fetch_channel_scenes(c_ref, ch.channel_id, ch.label, vd_ref).await
+            }
+        });
+        let channel_results = futures_util::future::join_all(fetches).await;
         let mut results = Vec::new();
-        // Fetch 8 popular + 4 latest from every channel
-        for ch in CHANNELS {
-            match fetch_channel_scenes(&cookie, ch.channel_id, ch.label).await {
-                Ok(scenes) => {
-                    for item in scenes {
-                        if !results.iter().any(|r: &SongItem| r.video_id == item.video_id) {
-                            results.push(item);
-                        }
+        for res in channel_results {
+            if let Ok(scenes) = res {
+                for item in scenes {
+                    if !results.iter().any(|r: &SongItem| r.video_id == item.video_id) {
+                        results.push(item);
                     }
                 }
-                Err(_) => continue,
             }
         }
         return Ok(results);

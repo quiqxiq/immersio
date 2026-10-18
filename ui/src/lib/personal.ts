@@ -53,6 +53,8 @@ export type Personal = {
 	 */
 	dismissedSeeds: string[];
 	home: HomeLayout;
+	videos: VideosLayout;
+	shadowing: ShadowingLayout;
 	/** Queries run on the search page, newest first, at most MAX_SEARCHES. */
 	searches: string[];
 };
@@ -92,6 +94,68 @@ const defaultHome = (): HomeLayout => ({
 	cards: 'medium'
 });
 
+/** Everything Edit videos sets. */
+export type VideosLayout = {
+	order: string[];
+	hidden: string[];
+	seen: string[];
+	hideNew: boolean;
+	chips: boolean;
+	cards: CardSize;
+};
+
+export const DEFAULT_VIDEO_SECTIONS = [
+	'@recommendations',
+	'@subscriptions',
+	'@channels',
+	'@ai',
+	'@tech',
+	'@science',
+	'@podcasts',
+	'@coding'
+];
+
+export const defaultVideos = (): VideosLayout => ({
+	order: [...DEFAULT_VIDEO_SECTIONS],
+	hidden: [],
+	seen: [...DEFAULT_VIDEO_SECTIONS],
+	hideNew: false,
+	chips: true,
+	cards: 'medium'
+});
+
+/** Everything Edit shadowing sets. */
+export type ShadowingLayout = {
+	order: string[];
+	hidden: string[];
+	seen: string[];
+	hideNew: boolean;
+	chips: boolean;
+	cards: CardSize;
+};
+
+export const DEFAULT_SHADOWING_SECTIONS = [
+	'@starter',
+	'@movieclips',
+	'@binge',
+	'@criticpicks',
+	'@omeleto',
+	'@keyandpeele',
+	'@scenecity',
+	'@clipempire',
+	'@dollartheater',
+	'@firstslasts'
+];
+
+export const defaultShadowing = (): ShadowingLayout => ({
+	order: [...DEFAULT_SHADOWING_SECTIONS],
+	hidden: [],
+	seen: [...DEFAULT_SHADOWING_SECTIONS],
+	hideNew: false,
+	chips: true,
+	cards: 'medium'
+});
+
 export function empty(): Personal {
 	return {
 		picks: [],
@@ -101,6 +165,8 @@ export function empty(): Personal {
 		artists: {},
 		dismissedSeeds: [],
 		home: defaultHome(),
+		videos: defaultVideos(),
+		shadowing: defaultShadowing(),
 		searches: []
 	};
 }
@@ -155,6 +221,38 @@ export function hydrate(raw: unknown): Personal {
 		}
 		// Shortcuts sat above the arrangement until it became a section of its own; it stays on top.
 		if (order.length && !order.includes('@shortcuts')) order.unshift('@shortcuts');
+	}
+	if (o.videos && typeof o.videos === 'object') {
+		const v = o.videos as Partial<VideosLayout>;
+		const keys = (arr: unknown) =>
+			Array.isArray(arr) ? arr.filter((k): k is string => typeof k === 'string') : [];
+		const flag = (val: unknown, fallback: boolean) => (typeof val === 'boolean' ? val : fallback);
+		const defaultOrder = DEFAULT_VIDEO_SECTIONS;
+		const parsedOrder = keys(v.order);
+		base.videos = {
+			order: parsedOrder.length ? parsedOrder : [...defaultOrder],
+			hidden: keys(v.hidden),
+			seen: keys(v.seen).length ? keys(v.seen) : [...defaultOrder],
+			hideNew: flag(v.hideNew, false),
+			chips: flag(v.chips, true),
+			cards: CARD_SIZES.includes(v.cards as CardSize) ? (v.cards as CardSize) : 'medium'
+		};
+	}
+	if (o.shadowing && typeof o.shadowing === 'object') {
+		const s = o.shadowing as Partial<ShadowingLayout>;
+		const keys = (arr: unknown) =>
+			Array.isArray(arr) ? arr.filter((k): k is string => typeof k === 'string') : [];
+		const flag = (val: unknown, fallback: boolean) => (typeof val === 'boolean' ? val : fallback);
+		const defaultOrder = DEFAULT_SHADOWING_SECTIONS;
+		const parsedOrder = keys(s.order);
+		base.shadowing = {
+			order: parsedOrder.length ? parsedOrder : [...defaultOrder],
+			hidden: keys(s.hidden),
+			seen: keys(s.seen).length ? keys(s.seen) : [...defaultOrder],
+			hideNew: flag(s.hideNew, false),
+			chips: flag(s.chips, true),
+			cards: CARD_SIZES.includes(s.cards as CardSize) ? (s.cards as CardSize) : 'medium'
+		};
 	}
 	return base;
 }
@@ -423,6 +521,84 @@ export function noteSections(p: Personal, titles: string[]): boolean {
 	const fresh = [...new Set(titles.filter((t) => t && !have.has(t)))];
 	if (!fresh.length) return false;
 	p.home.seen = [...fresh, ...p.home.seen].slice(0, MAX_SEEN);
+	return true;
+}
+
+// --- Videos arrangement ------------------------------------------------------------------------
+
+export function arrangeVideoSections<T extends { key: string }>(sections: T[], p: Personal): T[] {
+	const ranks = new Map(p.videos.order.map((key, i) => [key, i]));
+	const rank = (key: string) => ranks.get(key) ?? Number.MAX_SAFE_INTEGER;
+	return sections.slice().sort((a, b) => rank(a.key) - rank(b.key));
+}
+
+export function hiddenVideoSections(p: Personal): { has(key: string): boolean } {
+	const hidden = new Set(p.videos.hidden);
+	const ranked = new Set(p.videos.order);
+	const fresh = p.videos.hideNew && ranked.size > 0;
+	return { has: (key) => hidden.has(key) || (fresh && !ranked.has(key)) };
+}
+
+export function resetVideos(p: Personal): void {
+	p.videos = { ...defaultVideos(), seen: p.videos.seen };
+}
+
+export function videosIsDefault(p: Personal): boolean {
+	const d = defaultVideos();
+	const v = p.videos;
+	return (
+		JSON.stringify(v.order) === JSON.stringify(d.order) &&
+		!v.hidden.length &&
+		v.hideNew === d.hideNew &&
+		v.chips === d.chips &&
+		v.cards === d.cards
+	);
+}
+
+export function noteVideoSections(p: Personal, titles: string[]): boolean {
+	const have = new Set(p.videos.seen);
+	const fresh = [...new Set(titles.filter((t) => t && !have.has(t)))];
+	if (!fresh.length) return false;
+	p.videos.seen = [...fresh, ...p.videos.seen].slice(0, MAX_SEEN);
+	return true;
+}
+
+// --- Shadowing arrangement ----------------------------------------------------------------------
+
+export function arrangeShadowingSections<T extends { key: string }>(sections: T[], p: Personal): T[] {
+	const ranks = new Map(p.shadowing.order.map((key, i) => [key, i]));
+	const rank = (key: string) => ranks.get(key) ?? Number.MAX_SAFE_INTEGER;
+	return sections.slice().sort((a, b) => rank(a.key) - rank(b.key));
+}
+
+export function hiddenShadowingSections(p: Personal): { has(key: string): boolean } {
+	const hidden = new Set(p.shadowing.hidden);
+	const ranked = new Set(p.shadowing.order);
+	const fresh = p.shadowing.hideNew && ranked.size > 0;
+	return { has: (key) => hidden.has(key) || (fresh && !ranked.has(key)) };
+}
+
+export function resetShadowing(p: Personal): void {
+	p.shadowing = { ...defaultShadowing(), seen: p.shadowing.seen };
+}
+
+export function shadowingIsDefault(p: Personal): boolean {
+	const d = defaultShadowing();
+	const s = p.shadowing;
+	return (
+		JSON.stringify(s.order) === JSON.stringify(d.order) &&
+		!s.hidden.length &&
+		s.hideNew === d.hideNew &&
+		s.chips === d.chips &&
+		s.cards === d.cards
+	);
+}
+
+export function noteShadowingSections(p: Personal, titles: string[]): boolean {
+	const have = new Set(p.shadowing.seen);
+	const fresh = [...new Set(titles.filter((t) => t && !have.has(t)))];
+	if (!fresh.length) return false;
+	p.shadowing.seen = [...fresh, ...p.shadowing.seen].slice(0, MAX_SEEN);
 	return true;
 }
 

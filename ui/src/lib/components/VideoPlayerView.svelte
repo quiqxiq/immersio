@@ -863,11 +863,10 @@
 
 		<!-- Tab Contents (Directly Under Video & Meta) -->
 		<div class="mt-4">
-			{#if activeTab === 'transcript'}
-				<div class="h-[520px] rounded-2xl border border-border/60 bg-card/60 backdrop-blur-sm overflow-hidden shadow-sm">
-					<TranscriptView />
-				</div>
-			{:else if activeTab === 'recommended'}
+			<div class="h-[520px] rounded-2xl border border-border/60 bg-card/60 backdrop-blur-sm overflow-hidden shadow-sm {activeTab === 'transcript' ? '' : 'hidden'}">
+				<TranscriptView />
+			</div>
+			{#if activeTab === 'recommended'}
 				<div class="rounded-2xl border border-border/60 bg-card/60 backdrop-blur-sm p-4 overflow-hidden shadow-sm">
 					<RecommendedVideos />
 				</div>

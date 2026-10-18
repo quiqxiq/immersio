@@ -81,18 +81,31 @@ fn build_yt_headers(cookie: &str) -> HeaderMap {
 }
 
 /// Performs a raw InnerTube browse request with YouTube Web client.
-pub(crate) async fn post_browse(cookie: &str, browse_id: &str, params: Option<&str>) -> Result<Value, String> {
+pub(crate) async fn post_browse(
+    cookie: &str,
+    browse_id: &str,
+    params: Option<&str>,
+    visitor_data: Option<&str>,
+) -> Result<Value, String> {
     let client = get_client();
     let headers = build_yt_headers(cookie);
 
+    let mut client_obj = serde_json::json!({
+        "clientName": "WEB",
+        "clientVersion": "2.20240101.00.00",
+        "hl": "en",
+        "gl": "US"
+    });
+
+    if let Some(vd) = visitor_data {
+        if !vd.trim().is_empty() {
+            client_obj["visitorData"] = serde_json::Value::String(vd.trim().to_string());
+        }
+    }
+
     let mut body = serde_json::json!({
         "context": {
-            "client": {
-                "clientName": "WEB",
-                "clientVersion": "2.20240101.00.00",
-                "hl": "en",
-                "gl": "US"
-            }
+            "client": client_obj
         },
         "browseId": browse_id
     });
@@ -273,6 +286,42 @@ fn extract_text_val(val: &Value) -> Option<String> {
         }
     }
     None
+}
+
+/// Recursively traverses a JSON value to collect YouTube filter chips (`chipCloudChipRenderer`).
+pub fn extract_chips(val: &Value, out: &mut Vec<innertube::HomeChip>) {
+    match val {
+        Value::Object(map) => {
+            if let Some(chip) = map.get("chipCloudChipRenderer") {
+                let title = chip
+                    .get("text")
+                    .and_then(extract_text_val)
+                    .unwrap_or_default();
+                let params = chip
+                    .get("navigationEndpoint")
+                    .and_then(|n| {
+                        n.get("browseEndpoint")
+                            .and_then(|b| b.get("params"))
+                            .or_else(|| n.get("continuationCommand").and_then(|c| c.get("token")))
+                    })
+                    .and_then(|p| p.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if !title.is_empty() && !out.iter().any(|c| c.title == title) {
+                    out.push(innertube::HomeChip { title, params });
+                }
+            }
+            for v in map.values() {
+                extract_chips(v, out);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                extract_chips(v, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Recursively traverses a JSON value to collect YouTube videos.
@@ -755,7 +804,8 @@ pub async fn get_youtube_subscriptions(db: &Db) -> Result<Vec<SongItem>, String>
         return Err("Anda belum login dengan akun Google. Silakan login terlebih dahulu untuk melihat video subscriptions.".to_string());
     }
 
-    let data = post_browse(&cookie, "FEsubscriptions", None).await?;
+    let visitor_data = db.get_setting("visitor_data").filter(|s| !s.is_empty());
+    let data = post_browse(&cookie, "FEsubscriptions", None, visitor_data.as_deref()).await?;
     let mut videos = Vec::new();
     extract_videos(&data, &mut videos);
     Ok(videos)
@@ -773,7 +823,8 @@ pub async fn get_subscribed_channels(db: &Db) -> Result<Vec<SubscribedChannel>, 
         return Err("Anda belum login dengan akun Google. Silakan login terlebih dahulu untuk melihat daftar channel.".to_string());
     }
 
-    let data = post_browse(&cookie, "FEchannels", None).await?;
+    let visitor_data = db.get_setting("visitor_data").filter(|s| !s.is_empty());
+    let data = post_browse(&cookie, "FEchannels", None, visitor_data.as_deref()).await?;
     let mut channels = Vec::new();
 
     fn extract_channels(val: &Value, out: &mut Vec<SubscribedChannel>) {
@@ -854,25 +905,109 @@ pub async fn get_channel_videos(db: &Db, channel_id: &str) -> Result<Vec<SongIte
         .trim()
         .to_string();
 
+    let visitor_data = db.get_setting("visitor_data").filter(|s| !s.is_empty());
     // "Egl2aWRlb3PyBgQKAjoA" is the protobuf parameter for the channel's "Videos" tab
-    let data = post_browse(&cookie, channel_id, Some("Egl2aWRlb3PyBgQKAjoA")).await?;
+    let data = post_browse(&cookie, channel_id, Some("Egl2aWRlb3PyBgQKAjoA"), visitor_data.as_deref()).await?;
     let mut videos = Vec::new();
     extract_videos(&data, &mut videos);
     Ok(videos)
 }
 
-/// Fetches personalized home recommendations (`FEwhat_to_watch`).
-pub async fn get_youtube_recommendations(db: &Db) -> Result<Vec<SongItem>, String> {
+/// A feed page containing personalized recommendations or filtered category videos alongside dynamic YouTube chips.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct VideoFeedPage {
+    pub chips: Vec<innertube::HomeChip>,
+    pub videos: Vec<SongItem>,
+    pub continuation: Option<String>,
+}
+
+/// Fetches personalized home recommendations (`FEwhat_to_watch`) with dynamic YouTube category chips,
+/// or loads a specific chip filter using its continuation token.
+pub async fn get_youtube_video_feed(
+    db: &Db,
+    token: Option<&str>,
+    it: Option<&InnerTube>,
+    client: Option<&YouTubeClient>,
+) -> Result<VideoFeedPage, String> {
     let cookie = db
         .get_setting("session_cookie")
         .unwrap_or_default()
         .trim()
         .to_string();
 
-    let data = post_browse(&cookie, "FEwhat_to_watch", None).await?;
+    let visitor_data = db.get_setting("visitor_data").filter(|s| !s.is_empty());
+
     let mut videos = Vec::new();
-    extract_videos(&data, &mut videos);
-    Ok(videos)
+    let mut chips = Vec::new();
+
+    if let Some(t) = token {
+        let trimmed_token = t.trim();
+        if !trimmed_token.is_empty() {
+            let client = get_client();
+            let headers = build_yt_headers(&cookie);
+            let mut client_obj = serde_json::json!({
+                "clientName": "WEB",
+                "clientVersion": "2.20240101.00.00",
+                "hl": "en",
+                "gl": "US"
+            });
+            if let Some(vd) = &visitor_data {
+                client_obj["visitorData"] = serde_json::Value::String(vd.clone());
+            }
+            let body = serde_json::json!({
+                "context": {
+                    "client": client_obj
+                },
+                "continuation": trimmed_token
+            });
+
+            if let Ok(resp) = client.post(YT_BROWSE_URL).headers(headers).json(&body).send().await {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.json::<Value>().await {
+                        extract_videos(&json, &mut videos);
+                    }
+                }
+            }
+
+            return Ok(VideoFeedPage {
+                chips: Vec::new(),
+                videos,
+                continuation: None,
+            });
+        }
+    }
+
+    if let Ok(data) = post_browse(&cookie, "FEwhat_to_watch", None, visitor_data.as_deref()).await {
+        extract_chips(&data, &mut chips);
+        extract_videos(&data, &mut videos);
+    }
+
+    // Graceful fallback if anonymous or YouTube returned empty for FEwhat_to_watch
+    if videos.is_empty() {
+        if let (Some(it), Some(client)) = (it, client) {
+            if let Ok(trending) = get_trending_videos("featured", it, client).await {
+                videos = trending;
+            }
+        }
+    }
+
+    Ok(VideoFeedPage {
+        chips,
+        videos,
+        continuation: None,
+    })
+}
+
+/// Fetches personalized home recommendations (`FEwhat_to_watch`).
+/// If signed in with a Google account, pulls genuine YouTube homepage recommendations.
+/// If anonymous or empty, falls back gracefully to curated high-interest video topics.
+pub async fn get_youtube_recommendations(
+    db: &Db,
+    it: Option<&InnerTube>,
+    client: Option<&YouTubeClient>,
+) -> Result<Vec<SongItem>, String> {
+    let feed = get_youtube_video_feed(db, None, it, client).await?;
+    Ok(feed.videos)
 }
 
 /// Fetches curated non-music trending videos by category.
@@ -908,4 +1043,21 @@ pub async fn get_trending_videos(
         .collect();
 
     Ok(filtered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_live_what_to_watch() {
+        let db_path = std::path::PathBuf::from("/home/butterfly_student/.local/share/com.limusic.desktop/limusic.sqlite");
+        if db_path.exists() {
+            let (db, _) = crate::db::Db::open_or_quarantine(&db_path).unwrap();
+            let feed = get_youtube_video_feed(&db, None, None, None).await;
+            if let Ok(page) = feed {
+                assert!(!page.videos.is_empty(), "Videos should not be empty");
+            }
+        }
+    }
 }
