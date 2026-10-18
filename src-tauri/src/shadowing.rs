@@ -25,6 +25,7 @@ const CHANNELS: &[ShadowChannel] = &[
     ShadowChannel { slug: "movieclips",    label: "Movieclips",        channel_id: "UC3gNmTGu-TTbFPpfSs5kNkg" },
     ShadowChannel { slug: "scenecity",     label: "Scene City",        channel_id: "UC5N2asRYkdATmJ9dtr1fO1w" },
     ShadowChannel { slug: "omeleto",       label: "Omeleto",           channel_id: "UCTMt7iMWa7jy0fNXIktwyLA" },
+    ShadowChannel { slug: "keyandpeele",   label: "Key & Peele",       channel_id: "UCdN4aXTrHAtfgbVG9HjBmxQ" },
 ];
 
 // ── Duration Filter ─────────────────────────────────────────────────────────
@@ -93,6 +94,8 @@ pub fn starter_scenes() -> Vec<SongItem> {
         make_preset("uFc_5PFnBj0", "Babe Ruth Plays His Final Game of Baseball (Full Scene) | The Babe", "Scene City", "4:15"),
         // Omeleto
         make_preset("COjoicAahjo", "The Greatest Sports Scenes Compilation", "Omeleto", "9:44"),
+        // Key & Peele
+        make_preset("OQaLic5SE_I", "Key & Peele - Substitute Teacher", "Key & Peele", "3:07"),
     ]
 }
 

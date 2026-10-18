@@ -29,6 +29,7 @@
 		{ id: 'movieclips', label: 'Movieclips' },
 		{ id: 'scenecity', label: 'Scene City' },
 		{ id: 'omeleto', label: 'Omeleto' },
+		{ id: 'keyandpeele', label: 'Key & Peele' },
 		{ id: 'all', label: 'Jelajah Semua' }
 	];
 
