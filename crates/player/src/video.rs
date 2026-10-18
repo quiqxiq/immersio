@@ -73,6 +73,31 @@ impl Player {
         }
     }
 
+    /// Attach the video track synchronously to the active deck before unpausing playback,
+    /// ensuring video and audio start in exact frame sync without initial desync or catch-up lag.
+    pub fn attach_video_sync(&self, audio_url: &str, video_url: &str) {
+        let deck = self.decks.active.load(Ordering::SeqCst);
+        let Some(mpv) = self.decks.mpv(deck).cloned() else { return };
+        {
+            let mut v = self.decks.videos.lock().unwrap();
+            v.insert(audio_url, video_url);
+            v.loaded[deck] = Some(audio_url.to_owned());
+        }
+        if let Err(e) = mpv.command("video-add", &[&quoted(video_url), "auto"]) {
+            tracing::warn!(deck, error = %e, "video: sync video-add failed");
+            let _ = self.decks.tx.send(crate::PlayerEvent::VideoFailed(audio_url.to_owned()));
+            return;
+        }
+        let shown = self.decks.video_visible.load(Ordering::SeqCst)
+            && self.decks.active.load(Ordering::SeqCst) == deck;
+        let track = shown.then(|| newest_video_track(&mpv)).flatten();
+        let _ = match track {
+            Some(id) => mpv.set_property("vid", id),
+            None => mpv.set_property("vid", "no"),
+        };
+        tracing::debug!(deck, ?track, "video: attached synchronously before playback");
+    }
+
     /// The file mpv is playing, exactly as it was handed it.
     pub fn current_path(&self) -> Option<String> {
         self.mpv().get_property::<String>("path").ok()

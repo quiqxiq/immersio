@@ -216,8 +216,10 @@ fn new_mpv(cache_dir: &str) -> Result<Mpv, Error> {
         ("hwdec", "auto-safe"),
         ("hwdec-codecs", "all"),
         ("video-sync", "audio"),
-        ("framedrop", "vo"),
+        ("framedrop", "decoder+vo"),
+        ("hr-seek-framedrop", "yes"),
         ("vd-lavc-fast", "yes"),
+        ("vd-lavc-threads", "0"),
         ("video-timing-offset", "0"),
         ("osd-level", "0"),
         ("osd-bar", "no"),
@@ -266,15 +268,14 @@ fn new_mpv(cache_dir: &str) -> Result<Mpv, Error> {
     // (the log showed `Enter buffering ... waited 0.76 secs` after a seek into an
     // already-played range). 64 MiB keeps roughly an entire mix, so backward seeks stay
     // offline. It is packet metadata, so the memory cost is the same order as the forward cap.
-    mpv.set_property("demuxer-max-bytes", 64 * 1024 * 1024_i64)?;
+    mpv.set_property("demuxer-readahead-secs", 30.0)?;
+    let _ = mpv.set_property("stream-buffer-size", 524288_i64); // 512 KiB low-level network I/O buffer
+    let _ = mpv.set_property("demuxer-lavf-buffersize", 524288_i64); // 512 KiB libavformat container buffer
+    mpv.set_property("demuxer-max-bytes", 128 * 1024 * 1024_i64)?;
     mpv.set_property("demuxer-max-back-bytes", 64 * 1024 * 1024_i64)?;
-    // mpv enters "buffering" whenever a seek needs the network, and by default resumes only
-    // once a full second of audio is buffered (`cache-pause-wait`, default 1). That second is
-    // most of the "wait for it to start" after a seek; the connection answers in a fraction of
-    // it. Resume on a shorter buffer and let the demuxer keep filling behind playback. mpv
-    // still buffers (it pauses if the cache empties and the device underruns), so this shrinks
-    // the safety margin to start sooner, it does not remove the guard.
-    mpv.set_property("cache-pause-wait", 0.3)?;
+    // mpv enters "buffering" whenever a seek needs the network. 0.8s allows both audio and video
+    // keyframe packets to be ready before resuming playback, preventing video desync lag.
+    mpv.set_property("cache-pause-wait", 0.8)?;
     // ffmpeg's HTTP reader retries nothing by default: one dropped connection, one transient
     // error, and the track dies outright (mpv reports end-file with an error, which the app
     // turns into a skip). Seeking in a long stream is where that bites, because a seek past
@@ -1293,9 +1294,9 @@ mod tests {
             64 * 1024 * 1024,
             "back buffer reverted to mpv's default"
         );
-        // mpv stores this as a float, so the read-back is 0.30000001..., not 0.3 exactly.
+        // mpv stores this as a float, so the read-back is 0.80000001..., not 0.8 exactly.
         let cpw: f64 = p.mpv().get_property("cache-pause-wait").unwrap_or(-1.0);
-        assert!((cpw - 0.3).abs() < 1e-6, "buffering gate reverted to mpv's default, got {cpw}");
+        assert!((cpw - 0.8).abs() < 1e-6, "buffering gate reverted to mpv's default, got {cpw}");
 
         // The mpv log request is a raw FFI call libmpv2 doesn't wrap, and the whole point of it is
         // that someone reproducing a bug gets lines out of a shipped build. Check mpv takes the

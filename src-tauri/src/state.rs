@@ -2194,6 +2194,7 @@ impl AppState {
             && !crate::local::is_local_song(&item.video_id)
             && self.db.get_setting("music_videos").as_deref() != Some("false");
 
+        let mut pre_resolved_video_url = None;
         if is_video_track {
             let id = &item.video_id;
             let video_url = match self.video_url(id) {
@@ -2209,8 +2210,7 @@ impl AppState {
                 }
             };
             if let Some(url) = video_url {
-                self.player.set_video_for(&stream_url, &url);
-                let _ = self.app.emit("video-ready", id);
+                pre_resolved_video_url = Some(url);
             }
         }
 
@@ -2220,6 +2220,14 @@ impl AppState {
             self.emit_error(&item.video_id, &e.to_string());
             return false;
         }
+
+        // Synchronously attach video track immediately after load (while mpv is paused)
+        // so that video and audio start together at exact 0.0s / seek position without desync lag.
+        if let Some(ref v_url) = pre_resolved_video_url {
+            self.player.attach_video_sync(&stream_url, v_url);
+            let _ = self.app.emit("video-ready", &item.video_id);
+        }
+
         // Listen Together host: announce the track before `play`, whose pause-flag change is the
         // room's Play. Sent after, a skip while paused reaches guests as "play" on the old track
         // first. At the position mpv starts at, so a retry or a restored context isn't sent as 0.
@@ -2234,7 +2242,9 @@ impl AppState {
             data.artists.as_deref(),
             data.is_video,
         );
-        self.attach_video(&item.video_id, item.is_video, &stream_url);
+        if pre_resolved_video_url.is_none() {
+            self.attach_video(&item.video_id, item.is_video, &stream_url);
+        }
         {
             let mut q = self.queue.lock().await;
             q.current_client = Some(data.stream_client.clone());
