@@ -252,6 +252,17 @@
 									alt={v.title}
 									class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
 									loading="lazy"
+									onerror={(e) => {
+										// If high-res thumbnail 404s, step down to mqdefault or fallback placeholder
+										const target = e.currentTarget as HTMLImageElement;
+										if (target.src.includes('hqdefault.jpg')) {
+											target.src = target.src.replace('hqdefault.jpg', 'mqdefault.jpg');
+										} else if (!target.src.includes('default.jpg')) {
+											target.src = `https://i.ytimg.com/vi/${v.video_id}/default.jpg`;
+										} else {
+											target.style.display = 'none';
+										}
+									}}
 								/>
 							{:else}
 								<div class="flex h-full w-full items-center justify-center bg-muted text-muted-foreground">

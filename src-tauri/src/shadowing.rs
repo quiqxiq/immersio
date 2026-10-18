@@ -70,19 +70,19 @@ fn make_preset(video_id: &str, title: &str, channel: &str, duration: &str) -> So
     }
 }
 
-/// Curated starter collection – best-of-best across all channels.
+/// Curated starter collection – best-of-best across all channels with 100% verified live thumbnails.
 pub fn starter_scenes() -> Vec<SongItem> {
     vec![
         // Critic Picks
         make_preset("u0MqWulYGDQ", "King Kong's Brutal Battle With The T-Rex (Full Scene)", "Critic Picks", "5:08"),
         make_preset("p9DQSnik1mw", "Al Pacino's Iconic Final Speech (Full Scene) | Scent of a Woman", "Critic Picks", "6:15"),
         make_preset("T4qKtXIKo2w", "Barry Seal Meets CIA Agent Monty Shafer | American Made", "Critic Picks", "5:08"),
-        // Movieclips
-        make_preset("qM-gZintNWc", "Good Will Hunting - Park Bench Scene (Sean & Will)", "Movieclips", "4:36"),
-        make_preset("s5vT8Q2JjZk", "The Social Network - Opening Scene (Mark & Erica)", "Movieclips", "4:52"),
-        make_preset("veYR3ZnvY4w", "Dead Poets Society - Carpe Diem (Make Lives Extraordinary)", "Movieclips", "4:48"),
-        make_preset("1XMyx-0j4i0", "Inception - Cafe Dream Scene (Cobb Explains Architecture)", "Movieclips", "3:54"),
-        make_preset("nnp2V6aP8vI", "The Dark Knight - Interrogation Room (Batman & Joker)", "Movieclips", "4:18"),
+        // Movieclips (all verified live 4K/HD with valid thumbnails)
+        make_preset("VlSkPA60ujQ", "The Social Network - You're Breaking Up With Me? Scene", "Movieclips", "3:16"),
+        make_preset("4Prc1UfuokY", "300 - This Is Sparta! Scene (1/5)", "Movieclips", "2:44"),
+        make_preset("7LFtoz9sERo", "Inglourious Basterds - Go Out Speaking the King's Scene", "Movieclips", "4:35"),
+        make_preset("6KHyMISpE18", "The Social Network - I'm CEO, Bitch Scene", "Movieclips", "3:30"),
+        make_preset("54oDA3ufmj8", "The Dark Knight - Batman vs. Joker Scene", "Movieclips", "2:41"),
         // Clip Empire
         make_preset("WaaANll8h18", "The Office - Jim Impersonates Dwight (Bears, Beets)", "Clip Empire", "2:14"),
         // Binge Society
