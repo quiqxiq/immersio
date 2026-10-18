@@ -2057,8 +2057,31 @@ fn is_clause_starter(w: &str) -> bool {
     let clean = w.trim_start_matches(|c: char| !c.is_alphabetic()).to_lowercase();
     matches!(
         clean.as_str(),
-        "and" | "but" | "so" | "because" | "if" | "when" | "then" | "while" | "although" | "now" | "well" | "or"
+        "and" | "but" | "so" | "because" | "if" | "when" | "then" | "while" | "although" | "now" | "well" | "or" | "however"
     )
+}
+
+fn is_incomplete_ending(w: &str) -> bool {
+    let clean = w.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+    matches!(
+        clean.as_str(),
+        "a" | "an" | "the"
+        | "in" | "on" | "at" | "to" | "for" | "with" | "of" | "from" | "by" | "about" | "into" | "through"
+        | "his" | "her" | "my" | "their" | "our" | "its" | "your" | "this" | "that" | "these" | "those"
+        | "he" | "she" | "it" | "we" | "they" | "i" | "you" | "who" | "whom" | "whose" | "which"
+        | "is" | "are" | "was" | "were" | "be" | "been" | "being" | "have" | "has" | "had"
+        | "will" | "would" | "shall" | "should" | "can" | "could" | "may" | "might" | "must"
+        | "too" | "very" | "so" | "more" | "most" | "quite" | "really"
+        | "and" | "or" | "but" | "nor" | "yet" | "because" | "if" | "when" | "than" | "as"
+    )
+}
+
+fn is_non_verbal(text: &str) -> bool {
+    static RE_NON_VERBAL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE_NON_VERBAL.get_or_init(|| {
+        regex::Regex::new(r#"^(\[[^\]]*\]|\([^\)]*\)|[♪♫>]+)$"#).unwrap()
+    });
+    re.is_match(text.trim())
 }
 
 fn clean_speech_dialogue(text: &str) -> String {
@@ -2146,6 +2169,8 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
         return Vec::new();
     }
 
+    let has_punctuation = words.iter().any(|w| ends_with_sentence_terminator(&w.text));
+
     // 2. Segment words into complete grammatical sentences
     let mut sentences: Vec<LyricSentence> = Vec::new();
     let mut current_words: Vec<WordToken> = Vec::new();
@@ -2161,30 +2186,63 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
         if !should_break {
             let next_word = &words[i + 1];
             let gap_ms = next_word.start_ms.saturating_sub(word.end_ms);
+            let w_text = &word.text;
+            let next_text = &next_word.text;
 
-            // 1. Definite speaker change indicator on next word: ALWAYS BREAK!
-            if next_word.text.starts_with('-') || next_word.text.starts_with('—') || next_word.text.starts_with('>') {
+            // 1. Non-verbal audio tags (e.g. [Music], (Applause)) stand alone
+            if is_non_verbal(w_text) || is_non_verbal(next_text) {
                 should_break = true;
             }
-            // 2. Terminal punctuation (. ? ! ...) marks a complete sentence boundary
-            else if ends_with_sentence_terminator(&word.text) {
+            // 2. Definite speaker change indicator on next word: ALWAYS BREAK!
+            else if next_text.starts_with('-') || next_text.starts_with('—') || next_text.starts_with('>') {
                 should_break = true;
             }
-            // 3. Subtitles without terminal punctuation (e.g. ASR / auto-generated captions):
+            // 3. Significant silence gap between speech (>= 1500ms)
+            else if gap_ms >= 1500 {
+                should_break = true;
+            }
+            // 4. Punctuated transcript:
+            else if has_punctuation {
+                // Terminal punctuation (. ? ! ...) marks a complete sentence boundary
+                if ends_with_sentence_terminator(w_text) {
+                    should_break = true;
+                }
+                // Long run-on sentence safeguard (> 18 words)
+                else if current_words.len() >= 18 {
+                    // Lookahead: count how many words remain until the next sentence terminator
+                    let mut words_until_terminal = 0;
+                    for nw in words.iter().skip(i + 1).take(20) {
+                        words_until_terminal += 1;
+                        if ends_with_sentence_terminator(&nw.text) {
+                            break;
+                        }
+                    }
+                    // Only split if the next sentence terminator is far away (> 4 words),
+                    // NEVER leaving an awkward 1-4 word orphan at the end
+                    if words_until_terminal > 4 && !is_incomplete_ending(w_text) {
+                        if gap_ms >= 300 || w_text.ends_with(',') || w_text.ends_with(';') {
+                            should_break = true;
+                        } else if gap_ms >= 600 {
+                            should_break = true;
+                        }
+                    }
+                }
+            }
+            // 5. Subtitles without terminal punctuation (e.g. pure raw ASR captions without periods):
             else {
-                // Break on natural speech breathing pause (>= 400ms)
-                if gap_ms >= 400 {
+                // Break on natural speech breathing pause (>= 450ms) as long as not mid-phrase
+                if gap_ms >= 450 && !is_incomplete_ending(w_text) {
                     should_break = true;
                 }
-                // Working memory chunk limit: 8 words for comfortable shadowing (6-10 words)
-                else if current_words.len() >= 8 {
+                // Natural clause boundary after short pause (>= 250ms)
+                else if gap_ms >= 250 && is_clause_starter(next_text) && current_words.len() >= 5 && !is_incomplete_ending(w_text) {
                     should_break = true;
                 }
-                // Natural clause boundary after short pause
-                else if gap_ms >= 250 && is_clause_starter(&next_word.text) {
-                    should_break = true;
-                } else {
-                    should_break = false;
+                // Working memory chunk limit (9-14 words) for comfortable shadowing
+                else if current_words.len() >= 9 && !is_incomplete_ending(w_text) {
+                    if gap_ms >= 200 || current_words.len() >= 14 {
+                        should_break = true;
+                    }
                 }
             }
         }
@@ -2559,6 +2617,56 @@ mod tests {
         assert_eq!(sentences[2].text, "Just waiting.");
         assert_eq!(sentences[3].text, "Look at that!");
         assert_eq!(sentences[4].text, "Where?");
+    }
+
+    #[test]
+    fn test_youtube_rolling_captions_natural_sentences() {
+        // Reproduces the exact YouTube caption layout from video J-tJ-9WDLvY:
+        // Rolling cues across multiple events:
+        // Event 1: "protecting his hand. He was lifting his"
+        // Event 2: "whole card way too high."
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(60239),
+                end_time_ms: Some(62630),
+                text: "protecting his hand. He was lifting his".into(),
+                words: Some(vec![
+                    LyricWord { text: "protecting".into(), start_ms: 60239, end_ms: 60589 },
+                    LyricWord { text: "his".into(), start_ms: 60640, end_ms: 60990 },
+                    LyricWord { text: "hand.".into(), start_ms: 60879, end_ms: 61229 },
+                    LyricWord { text: "He".into(), start_ms: 61840, end_ms: 62190 },
+                    LyricWord { text: "was".into(), start_ms: 62000, end_ms: 62350 },
+                    LyricWord { text: "lifting".into(), start_ms: 62160, end_ms: 62510 },
+                    LyricWord { text: "his".into(), start_ms: 62399, end_ms: 62749 },
+                ]),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(62640),
+                end_time_ms: Some(66600),
+                text: "whole card way too high.".into(),
+                words: Some(vec![
+                    LyricWord { text: "whole".into(), start_ms: 62640, end_ms: 62990 },
+                    LyricWord { text: "card".into(), start_ms: 62879, end_ms: 63229 },
+                    LyricWord { text: "way".into(), start_ms: 63120, end_ms: 63470 },
+                    LyricWord { text: "too".into(), start_ms: 63359, end_ms: 63709 },
+                    LyricWord { text: "high.".into(), start_ms: 63600, end_ms: 63950 },
+                ]),
+                ..Default::default()
+            },
+        ];
+
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 2);
+        assert_eq!(sentences[0].text, "protecting his hand.");
+        assert_eq!(sentences[0].start_ms, 60239);
+        assert_eq!(sentences[0].end_ms, 61229);
+
+        // Entire predicate stays together! Never cut into "He was lifting his whole card way too" + "high."
+        assert_eq!(sentences[1].text, "He was lifting his whole card way too high.");
+        assert_eq!(sentences[1].start_ms, 61840);
+        assert_eq!(sentences[1].end_ms, 63950);
+        assert_eq!(sentences[1].word_count, 9);
     }
 
     /// Are the external providers still alive? Hits them all for real, so it is NOT in the default

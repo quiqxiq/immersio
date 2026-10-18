@@ -182,7 +182,26 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 
 	function isClauseStarter(w: string): boolean {
 		const clean = w.replace(/^[^a-zA-Z]+/, '').toLowerCase();
-		return ['and', 'but', 'so', 'because', 'if', 'when', 'then', 'while', 'although', 'now', 'well', 'or'].includes(clean);
+		return ['and', 'but', 'so', 'because', 'if', 'when', 'then', 'while', 'although', 'now', 'well', 'or', 'however'].includes(clean);
+	}
+
+	function isIncompleteEnding(w: string): boolean {
+		const clean = w.replace(/[^a-zA-Z]/g, '').toLowerCase();
+		const set = new Set([
+			'a', 'an', 'the',
+			'in', 'on', 'at', 'to', 'for', 'with', 'of', 'from', 'by', 'about', 'into', 'through',
+			'his', 'her', 'my', 'their', 'our', 'its', 'your', 'this', 'that', 'these', 'those',
+			'he', 'she', 'it', 'we', 'they', 'i', 'you', 'who', 'whom', 'whose', 'which',
+			'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+			'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must',
+			'too', 'very', 'so', 'more', 'most', 'quite', 'really',
+			'and', 'or', 'but', 'nor', 'yet', 'because', 'if', 'when', 'than', 'as'
+		]);
+		return set.has(clean);
+	}
+
+	function isNonVerbal(text: string): boolean {
+		return /^(\[[^\]]*\]|\([^\)]*\)|[♪♫>]+)$/.test(text.trim());
 	}
 
 	function calculatePause(durMs: number, count: number): number {
@@ -241,6 +260,7 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 
 	if (words.length === 0) return [];
 
+	const hasPunctuation = words.some(w => endsWithTerminator(w.text));
 	const sentences: LyricSentence[] = [];
 	let currentWords: WordToken[] = [];
 
@@ -254,19 +274,63 @@ export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
 		if (!shouldBreak) {
 			const nextWord = words[i + 1];
 			const gapMs = Math.max(0, nextWord.start_ms - word.end_ms);
+			const wText = word.text;
+			const nextText = nextWord.text;
 
-			if (nextWord.text.startsWith('-') || nextWord.text.startsWith('—') || nextWord.text.startsWith('>')) {
+			// 1. Non-verbal audio tags stand alone
+			if (isNonVerbal(wText) || isNonVerbal(nextText)) {
 				shouldBreak = true;
-			} else if (endsWithTerminator(word.text)) {
+			}
+			// 2. Speaker change indicator on next word: ALWAYS BREAK!
+			else if (nextText.startsWith('-') || nextText.startsWith('—') || nextText.startsWith('>')) {
 				shouldBreak = true;
-			} else if (gapMs >= 400) {
+			}
+			// 3. Significant silence gap between speech (>= 1500ms)
+			else if (gapMs >= 1500) {
 				shouldBreak = true;
-			} else if (currentWords.length >= 8) {
-				shouldBreak = true;
-			} else if (gapMs >= 250 && isClauseStarter(nextWord.text)) {
-				shouldBreak = true;
-			} else {
-				shouldBreak = false;
+			}
+			// 4. Punctuated transcript:
+			else if (hasPunctuation) {
+				// Terminal punctuation marks complete sentence boundary
+				if (endsWithTerminator(wText)) {
+					shouldBreak = true;
+				}
+				// Long run-on sentence safeguard (> 18 words)
+				else if (currentWords.length >= 18) {
+					let wordsUntilTerminal = 0;
+					for (let k = i + 1; k < Math.min(words.length, i + 21); k++) {
+						wordsUntilTerminal++;
+						if (endsWithTerminator(words[k].text)) {
+							break;
+						}
+					}
+					// Only split if terminal punctuation is far away (> 4 words),
+					// NEVER leaving an awkward 1-4 word orphan at the end
+					if (wordsUntilTerminal > 4 && !isIncompleteEnding(wText)) {
+						if (gapMs >= 300 || wText.endsWith(',') || wText.endsWith(';')) {
+							shouldBreak = true;
+						} else if (gapMs >= 600) {
+							shouldBreak = true;
+						}
+					}
+				}
+			}
+			// 5. Unpunctuated transcript (pure raw ASR without periods):
+			else {
+				// Break on natural speech breathing pause (>= 450ms) as long as not mid-phrase
+				if (gapMs >= 450 && !isIncompleteEnding(wText)) {
+					shouldBreak = true;
+				}
+				// Natural clause boundary after short pause (>= 250ms)
+				else if (gapMs >= 250 && isClauseStarter(nextText) && currentWords.length >= 5 && !isIncompleteEnding(wText)) {
+					shouldBreak = true;
+				}
+				// Working memory chunk limit (9-14 words) for comfortable shadowing
+				else if (currentWords.length >= 9 && !isIncompleteEnding(wText)) {
+					if (gapMs >= 200 || currentWords.length >= 14) {
+						shouldBreak = true;
+					}
+				}
 			}
 		}
 
