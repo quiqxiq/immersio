@@ -74,8 +74,8 @@
 	}
 
 	/**
-	 * Cleans non-verbal sounds, musical tags, and audio cues like [music], [laughter],
-	 * (applause), ♪ notes from shadowing dialogue cards so users only practice speech.
+	 * Cleans non-verbal sounds, musical tags, audio cues, and speaker change symbols
+	 * like [music], [laughter], (applause), ♪ notes, and ">>" from shadowing dialogue cards.
 	 */
 	function cleanShadowingDialogue(text: string | null | undefined): string {
 		if (!text) return '';
@@ -83,6 +83,9 @@
 			.replace(/\[[^\]]*\]/g, '') // remove [music], [laughter], [cheering], etc.
 			.replace(/\([^\)]*\)/g, '') // remove (applause), (screaming), etc.
 			.replace(/[♪♫]+/g, '')      // remove musical note symbols
+			.replace(/&gt;&gt;?/g, '')  // remove HTML entity >> or >
+			.replace(/>+ */g, '')       // remove >> or >>> speaker indicators
+			.replace(/(?:^|\s)-+\s*/g, ' ') // clean leading dashes from speaker turns
 			.replace(/\s+/g, ' ')       // collapse multiple spaces
 			.trim();
 	}
