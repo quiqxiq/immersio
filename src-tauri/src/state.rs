@@ -1,7 +1,7 @@
 //! App state: transport, player, db, and the queue/playback manager. context/11.
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -540,9 +540,10 @@ impl AppState {
                     u
                 }
             };
-            // Video streams are handed directly to mpv. mpv's internal HTTP demuxer
-            // handles adaptive YouTube streams natively without 4 MiB chunk slicing.
-            st.player.set_video_for(&audio, &url);
+            // Route video stream through audioproxy's bounded chunked loopback to bypass
+            // GoogleVideo's open-ended streaming throttling (which otherwise throttles to ~32 KB/s).
+            let proxied_url = crate::audioproxy::register(&url, &HashMap::new()).unwrap_or(url);
+            st.player.set_video_for(&audio, &proxied_url);
             let _ = st.app.emit("video-ready", &id);
         });
     }
@@ -2223,8 +2224,11 @@ impl AppState {
 
         // Synchronously attach video track immediately after load (while mpv is paused)
         // so that video and audio start together at exact 0.0s / seek position without desync lag.
+        // Route through audioproxy's bounded chunked loopback to prevent YouTube from throttling the video to 32 KB/s.
         if let Some(ref v_url) = pre_resolved_video_url {
-            self.player.attach_video_sync(&stream_url, v_url);
+            let proxied_v_url = crate::audioproxy::register(v_url, &HashMap::new())
+                .unwrap_or_else(|| v_url.clone());
+            self.player.attach_video_sync(&stream_url, &proxied_v_url);
             let _ = self.app.emit("video-ready", &item.video_id);
         }
 
