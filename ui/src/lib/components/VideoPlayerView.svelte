@@ -73,6 +73,20 @@
 		api.setPlaybackParams(spd, 0).catch((e) => console.error('Failed to set speed:', e));
 	}
 
+	/**
+	 * Cleans non-verbal sounds, musical tags, and audio cues like [music], [laughter],
+	 * (applause), ♪ notes from shadowing dialogue cards so users only practice speech.
+	 */
+	function cleanShadowingDialogue(text: string | null | undefined): string {
+		if (!text) return '';
+		return text
+			.replace(/\[[^\]]*\]/g, '') // remove [music], [laughter], [cheering], etc.
+			.replace(/\([^\)]*\)/g, '') // remove (applause), (screaming), etc.
+			.replace(/[♪♫]+/g, '')      // remove musical note symbols
+			.replace(/\s+/g, ' ')       // collapse multiple spaces
+			.trim();
+	}
+
 	function resumeNext() {
 		clearShadowTimer();
 		shadowing.isWaiting = false;
@@ -260,8 +274,10 @@
 		// 1. Primary: Use full reconstructed sentences
 		if (sentences && sentences.length > 0 && sIdx >= 0 && sIdx < sentences.length) {
 			const curSentence = sentences[sIdx];
-			// Do not pause on micro-utterances / interjections (<= 2 words like "Okay.", "Yeah.", "- Mm-hmm.")
-			if (curSentence.skip_pause || curSentence.word_count <= 2) {
+			const cleanedSpeech = cleanShadowingDialogue(curSentence.text);
+
+			// Do not pause on non-verbal tags ([Music], [Applause]) or micro-utterances (<= 2 words like "Okay.", "Yeah.")
+			if (curSentence.skip_pause || curSentence.word_count <= 2 || !cleanedSpeech) {
 				return;
 			}
 
@@ -308,7 +324,10 @@
 		if (!lines || lines.length === 0 || idx < 0 || idx >= lines.length) return;
 
 		const curLine = lines[idx];
-		const wordsCount = curLine.text.split(/\s+/).filter(Boolean).length;
+		const cleanedLine = cleanShadowingDialogue(curLine.text);
+		if (!cleanedLine) return;
+
+		const wordsCount = cleanedLine.split(/\s+/).filter(Boolean).length;
 		if (wordsCount <= 2) return;
 
 		const startMs = curLine.time_ms ?? 0;
@@ -568,8 +587,8 @@
 				{@const curLine = (lines && activeLineIdx >= 0 && activeLineIdx < lines.length) ? lines[activeLineIdx] : null}
 				{@const nextLine = (lines && activeLineIdx + 1 < lines.length) ? lines[activeLineIdx + 1] : null}
 
-				{@const currentDisplaySentenceText = curSentence ? curSentence.text : (curLine ? curLine.text : '')}
-				{@const nextDisplaySentenceText = nextSentence ? nextSentence.text : (nextLine ? nextLine.text : '')}
+				{@const currentDisplaySentenceText = cleanShadowingDialogue(curSentence ? curSentence.text : (curLine ? curLine.text : ''))}
+				{@const nextDisplaySentenceText = cleanShadowingDialogue(nextSentence ? nextSentence.text : (nextLine ? nextLine.text : ''))}
 				{@const timerPct = shadowing.pauseTotalMs > 0 ? Math.round((shadowing.pauseRemainingMs / shadowing.pauseTotalMs) * 100) : 0}
 
 				<div class="rounded-2xl border-2 {shadowing.isWaiting ? 'border-primary bg-primary/5 shadow-md shadow-primary/10' : 'border-border/60 bg-card/70'} p-4.5 backdrop-blur-md transition-all">
