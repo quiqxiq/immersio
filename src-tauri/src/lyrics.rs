@@ -445,9 +445,6 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
     static RE_D_ATTR: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re_d = RE_D_ATTR.get_or_init(|| regex::Regex::new(r#"\bd="(\d+)""#).unwrap());
 
-    static RE_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r#"\s+"#).unwrap());
-
     for cap in re_p.captures_iter(xml) {
         let attrs = cap.get(1).map_or("", |m| m.as_str());
         let body = cap.get(2).map_or("", |m| m.as_str());
@@ -459,23 +456,12 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
                     .and_then(|c| c.get(1))
                     .and_then(|d| d.as_str().parse::<u64>().ok());
 
-                let stripped = re_tags.replace_all(body, " ");
-                let unescaped = unescape_xml_entities(&stripped);
-                let text = re_spaces.replace_all(unescaped.trim(), " ").to_string();
-                if !text.is_empty() {
-                    let end_time = duration_opt.map(|d| ms + d);
-                    if let Some(last_line) = lines.last_mut() {
-                        if last_line.text == text {
-                            if end_time > last_line.end_time_ms {
-                                last_line.end_time_ms = end_time;
-                            }
-                            continue;
-                        }
-                    }
-                    let mut line = LyricLine::simple(Some(ms), text);
-                    line.end_time_ms = end_time;
-                    lines.push(line);
-                }
+                let body_with_breaks = body
+                    .replace("<br>", "\n")
+                    .replace("<br/>", "\n")
+                    .replace("<br />", "\n");
+                let stripped = re_tags.replace_all(&body_with_breaks, "");
+                push_split_dialogue_cues(&mut lines, ms, duration_opt, &stripped);
             }
         }
     }
@@ -507,29 +493,159 @@ pub fn parse_caption_xml(xml: &str) -> Vec<LyricLine> {
                     .and_then(|d| d.as_str().parse::<f64>().ok())
                     .map(|d_secs| (d_secs * 1000.0).round() as u64);
 
-                let stripped = re_tags.replace_all(body, " ");
-                let unescaped = unescape_xml_entities(&stripped);
-                let text = re_spaces.replace_all(unescaped.trim(), " ").to_string();
-                if !text.is_empty() {
-                    let end_time = duration_opt.map(|d| ms + d);
-                    if let Some(last_line) = lines.last_mut() {
-                        if last_line.text == text {
-                            if end_time > last_line.end_time_ms {
-                                last_line.end_time_ms = end_time;
-                            }
-                            continue;
-                        }
-                    }
-                    let mut line = LyricLine::simple(Some(ms), text);
-                    line.end_time_ms = end_time;
-                    lines.push(line);
-                }
+                let body_with_breaks = body
+                    .replace("<br>", "\n")
+                    .replace("<br/>", "\n")
+                    .replace("<br />", "\n");
+                let stripped = re_tags.replace_all(&body_with_breaks, "");
+                push_split_dialogue_cues(&mut lines, ms, duration_opt, &stripped);
             }
         }
     }
 
     lines.sort_by_key(|l| l.time_ms.unwrap_or(0));
     lines
+}
+
+fn split_inline_dialogue(text: &str) -> Vec<String> {
+    if text.contains(">>") {
+        return text
+            .split(">>")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    for delim in &[" - ", " — "] {
+        if let Some(idx) = text.find(delim) {
+            let left = text[..idx].trim_end();
+            if let Some(last_char) = left.chars().last() {
+                if matches!(last_char, '.' | '?' | '!' | '"' | '\'' | '”' | '’') {
+                    let right = text[idx + delim.len()..].trim();
+                    if !left.is_empty() && !right.is_empty() {
+                        return vec![left.to_string(), right.to_string()];
+                    }
+                }
+            }
+        }
+    }
+    vec![text.trim().to_string()]
+}
+
+/// Splits multi-speaker cues (e.g. "- Line 1\n- Line 2" or "Speaker A >> Speaker B")
+/// into separate lines with proportional duration, preventing dialogues from merging.
+fn push_split_dialogue_cues(
+    lines: &mut Vec<LyricLine>,
+    start_ms: u64,
+    duration_opt: Option<u64>,
+    raw_body: &str,
+) {
+    let unescaped = unescape_xml_entities(raw_body);
+    let normalized = unescaped.replace('\r', "");
+
+    // 1. Check if text has multiple lines with speaker change indicators (- or >> or >)
+    let raw_lines: Vec<&str> = normalized
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    let mut parts = Vec::new();
+    if raw_lines.len() > 1
+        && raw_lines
+            .iter()
+            .skip(1)
+            .any(|l| l.starts_with('-') || l.starts_with('—') || l.starts_with('>') || l.starts_with(">>"))
+    {
+        for l in raw_lines {
+            parts.push(l.to_string());
+        }
+    } else {
+        // 2. Check inline dialogue change: e.g. "Question? - Answer." or "... >> Next speaker"
+        let inline_parts = split_inline_dialogue(&normalized);
+        if inline_parts.len() > 1 {
+            for p in inline_parts {
+                parts.push(p);
+            }
+        } else {
+            static RE_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r#"\s+"#).unwrap());
+            let clean = re_spaces.replace_all(normalized.trim(), " ").to_string();
+            if !clean.is_empty() {
+                parts.push(clean);
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        return;
+    }
+
+    static RE_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r#"\s+"#).unwrap());
+
+    static RE_PUNCT_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_punct_spaces = RE_PUNCT_SPACES.get_or_init(|| regex::Regex::new(r#"\s+([,.?!:;])"#).unwrap());
+
+    if parts.len() == 1 {
+        let text = re_spaces.replace_all(&parts[0], " ").trim().to_string();
+        let text = re_punct_spaces.replace_all(&text, "$1").to_string();
+        if text.is_empty() {
+            return;
+        }
+        let end_time = duration_opt.map(|d| start_ms + d);
+        if let Some(last_line) = lines.last_mut() {
+            if last_line.text == text {
+                if end_time > last_line.end_time_ms {
+                    last_line.end_time_ms = end_time;
+                }
+                return;
+            }
+        }
+        let mut line = LyricLine::simple(Some(start_ms), text);
+        line.end_time_ms = end_time;
+        lines.push(line);
+        return;
+    }
+
+    // Multiple speakers: split cue proportionally based on word count
+    let total_dur = duration_opt.unwrap_or(2500).max(1000);
+    let mut word_counts = Vec::new();
+    let mut clean_parts = Vec::new();
+
+    static RE_PREFIX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_prefix = RE_PREFIX.get_or_init(|| regex::Regex::new(r#"^[-—>]+\s*"#).unwrap());
+
+    for p in &parts {
+        let clean = re_prefix.replace(p.trim(), "").to_string();
+        let clean = re_spaces.replace_all(clean.trim(), " ").to_string();
+        let clean = re_punct_spaces.replace_all(&clean, "$1").to_string();
+        if !clean.is_empty() {
+            let wc = clean.split_whitespace().count().max(1);
+            word_counts.push(wc);
+            clean_parts.push(clean);
+        }
+    }
+
+    let total_words: usize = word_counts.iter().sum();
+    if total_words == 0 || clean_parts.is_empty() {
+        return;
+    }
+
+    let mut cur_ms = start_ms;
+    let n = clean_parts.len();
+    for (idx, text) in clean_parts.into_iter().enumerate() {
+        let part_dur = if idx + 1 == n {
+            (start_ms + total_dur).saturating_sub(cur_ms).max(500)
+        } else {
+            let frac = (word_counts[idx] as f64) / (total_words as f64);
+            ((total_dur as f64) * frac).round() as u64
+        };
+        let end_ms = cur_ms + part_dur.max(400);
+        let mut line = LyricLine::simple(Some(cur_ms), text);
+        line.end_time_ms = Some(end_ms);
+        lines.push(line);
+        cur_ms = end_ms;
+    }
 }
 
 fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
@@ -544,17 +660,32 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
                 _ => None,
             };
 
-            let mut words = Vec::new();
             let mut full_text = String::new();
-
             for s in &ev.segs {
                 if let Some(utf8) = &s.utf8 {
                     full_text.push_str(utf8);
                 }
             }
+            let trimmed = full_text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if trimmed.contains('\n') || trimmed.contains(">>") || trimmed.contains(" - ") || trimmed.contains(" — ") {
+                let prev_len = lines.len();
+                push_split_dialogue_cues(&mut lines, line_start.unwrap_or(0), line_duration, &full_text);
+                if lines.len() > prev_len {
+                    continue;
+                }
+            }
+
             static RE_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
             let re_spaces = RE_SPACES.get_or_init(|| regex::Regex::new(r#"\s+"#).unwrap());
-            let text = re_spaces.replace_all(full_text.trim(), " ").to_string();
+            static RE_PUNCT_SPACES: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let re_punct_spaces = RE_PUNCT_SPACES.get_or_init(|| regex::Regex::new(r#"\s+([,.?!:;])"#).unwrap());
+
+            let text = re_spaces.replace_all(trimmed, " ").to_string();
+            let text = re_punct_spaces.replace_all(&text, "$1").to_string();
             if !text.is_empty() {
                 if let Some(last_line) = lines.last_mut() {
                     if last_line.text == text {
@@ -564,15 +695,17 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
                         continue;
                     }
                 }
+
+                let mut words = Vec::new();
                 if let Some(base_ms) = line_start {
                     for s in &ev.segs {
                         if let Some(utf8) = &s.utf8 {
-                            let trimmed = utf8.trim();
-                            if !trimmed.is_empty() && trimmed != "\n" {
+                            let w_trim = utf8.trim();
+                            if !w_trim.is_empty() && w_trim != "\n" {
                                 let w_start = base_ms + s.offset_ms.unwrap_or(0);
                                 let w_end = w_start + 350;
                                 words.push(LyricWord {
-                                    text: trimmed.to_string(),
+                                    text: w_trim.to_string(),
                                     start_ms: w_start,
                                     end_ms: w_end,
                                 });
@@ -583,7 +716,6 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
 
                 let mut line = LyricLine::simple(line_start, text);
                 line.end_time_ms = line_end;
-                // Only assign word-level timings if segments are actual individual words without spaces
                 if !words.is_empty() && !words.iter().any(|w| w.text.contains(' ')) {
                     line.words = Some(words);
                 }
@@ -1921,67 +2053,135 @@ pub fn calculate_suggested_pause(duration_ms: u64, word_count: usize) -> u64 {
     base.clamp(1800, 12000)
 }
 
+fn is_clause_starter(w: &str) -> bool {
+    let clean = w.trim_start_matches(|c: char| !c.is_alphabetic()).to_lowercase();
+    matches!(
+        clean.as_str(),
+        "and" | "but" | "so" | "because" | "if" | "when" | "then" | "while" | "although" | "now" | "well" | "or"
+    )
+}
+
+fn clean_speech_dialogue(text: &str) -> String {
+    static RE_TAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_tags = RE_TAGS.get_or_init(|| regex::Regex::new(r#"\[[^\]]*\]|\([^\)]*\)|[♪♫>]+"#).unwrap());
+    let stripped = re_tags.replace_all(text, " ");
+    stripped
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+#[derive(Debug, Clone)]
+struct WordToken {
+    text: String,
+    start_ms: u64,
+    end_ms: u64,
+}
+
 /// Reconstruct full grammatical sentences from raw subtitle cues with natural boundaries
 pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
     if lines.is_empty() {
         return Vec::new();
     }
 
-    let mut sentences: Vec<LyricSentence> = Vec::new();
-    let mut cur_text = String::new();
-    let mut cur_start_ms = 0u64;
-    let mut cur_end_ms = 0u64;
-    let mut is_first_in_chunk = true;
+    // 1. Flatten all lines into a stream of timestamped word tokens
+    let mut words: Vec<WordToken> = Vec::new();
 
-    for (i, line) in lines.iter().enumerate() {
-        let text = line.text.trim();
-        if text.is_empty() {
+    for (line_idx, line) in lines.iter().enumerate() {
+        let line_text = line.text.trim();
+        if line_text.is_empty() {
             continue;
         }
-        let start_ms = line.time_ms.unwrap_or(0);
-        let end_ms = line.end_time_ms.unwrap_or(start_ms + 2500);
 
-        if is_first_in_chunk {
-            cur_start_ms = start_ms;
-            cur_end_ms = end_ms;
-            cur_text = text.to_string();
-            is_first_in_chunk = false;
-        } else {
-            cur_text.push(' ');
-            cur_text.push_str(text);
-            if end_ms > cur_end_ms {
-                cur_end_ms = end_ms;
+        let start_ms = line.time_ms.unwrap_or(0);
+        let end_ms = line.end_time_ms.unwrap_or_else(|| {
+            if line_idx + 1 < lines.len() && lines[line_idx + 1].time_ms.is_some() {
+                lines[line_idx + 1].time_ms.unwrap()
+            } else {
+                start_ms + (line_text.split_whitespace().count() as u64 * 380).max(1500)
+            }
+        });
+
+        if let Some(line_words) = &line.words {
+            if !line_words.is_empty() {
+                for lw in line_words {
+                    words.push(WordToken {
+                        text: lw.text.clone(),
+                        start_ms: lw.start_ms,
+                        end_ms: lw.end_ms,
+                    });
+                }
+                continue;
             }
         }
 
-        let is_last_line = i + 1 == lines.len();
-        let mut should_break = is_last_line;
+        // Interpolate word timestamps across line duration
+        let line_word_tokens: Vec<&str> = line_text.split_whitespace().collect();
+        let total_words = line_word_tokens.len();
+        if total_words == 0 {
+            continue;
+        }
+
+        let total_duration = end_ms.saturating_sub(start_ms).max(total_words as u64 * 200);
+        let duration_per_word = total_duration / total_words as u64;
+
+        for (w_idx, w_str) in line_word_tokens.into_iter().enumerate() {
+            let w_start = start_ms + (w_idx as u64 * duration_per_word);
+            let w_end = if w_idx + 1 == total_words {
+                end_ms
+            } else {
+                w_start + duration_per_word
+            };
+            words.push(WordToken {
+                text: w_str.to_string(),
+                start_ms: w_start,
+                end_ms: w_end,
+            });
+        }
+    }
+
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    // 2. Segment words into complete grammatical sentences
+    let mut sentences: Vec<LyricSentence> = Vec::new();
+    let mut current_words: Vec<WordToken> = Vec::new();
+
+    let total_words = words.len();
+    for i in 0..total_words {
+        let word = &words[i];
+        current_words.push(word.clone());
+
+        let is_last_word = i + 1 == total_words;
+        let mut should_break = is_last_word;
 
         if !should_break {
-            let next_line = &lines[i + 1];
-            let next_start = next_line.time_ms.unwrap_or(cur_end_ms);
-            let next_text = next_line.text.trim();
-            let gap_ms = next_start.saturating_sub(cur_end_ms);
+            let next_word = &words[i + 1];
+            let gap_ms = next_word.start_ms.saturating_sub(word.end_ms);
 
-            let last_token = cur_text.split_whitespace().last().unwrap_or("");
-            let has_terminal = ends_with_sentence_terminator(last_token);
-            let words_count = cur_text.split_whitespace().count();
-            let next_words_count = next_text.split_whitespace().count();
-
-            if has_terminal {
-                // If it's a micro-utterance (<= 2 words, e.g. "- Okay.", "I sang,") and next speech is close (< 1000ms), absorb
-                if words_count <= 2 && gap_ms < 1000 && !next_text.starts_with('-') {
-                    should_break = false;
-                }
-                // If both current and next are very short sentences (< 800ms gap, same speaker, e.g. "Well, scientifically, I do." + "We all do.")
-                else if words_count <= 4 && next_words_count <= 4 && gap_ms < 800 && !next_text.starts_with('-') {
-                    should_break = false;
-                } else {
+            // 1. Definite speaker change indicator on next word: ALWAYS BREAK!
+            if next_word.text.starts_with('-') || next_word.text.starts_with('—') || next_word.text.starts_with('>') {
+                should_break = true;
+            }
+            // 2. Terminal punctuation (. ? ! ...) marks a complete sentence boundary
+            else if ends_with_sentence_terminator(&word.text) {
+                should_break = true;
+            }
+            // 3. Subtitles without terminal punctuation (e.g. ASR / auto-generated captions):
+            else {
+                // Break on natural speech breathing pause (>= 400ms)
+                if gap_ms >= 400 {
                     should_break = true;
                 }
-            } else {
-                // Non-terminal: break only on long silence gap, speaker change, or sentence length limit
-                if gap_ms >= 1200 || next_text.starts_with("- ") || words_count >= 24 {
+                // Working memory chunk limit: 8 words for comfortable shadowing (6-10 words)
+                else if current_words.len() >= 8 {
+                    should_break = true;
+                }
+                // Natural clause boundary after short pause
+                else if gap_ms >= 250 && is_clause_starter(&next_word.text) {
                     should_break = true;
                 } else {
                     should_break = false;
@@ -1989,25 +2189,38 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
             }
         }
 
-        if should_break {
-            let word_count = cur_text.split_whitespace().count();
-            let duration_ms = cur_end_ms.saturating_sub(cur_start_ms);
+        if should_break && !current_words.is_empty() {
+            let first_w = current_words.first().unwrap();
+            let last_w = current_words.last().unwrap();
+            let sentence_text = current_words
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let start_ms = first_w.start_ms;
+            let end_ms = last_w.end_ms;
+            let duration_ms = end_ms.saturating_sub(start_ms);
+            let word_count = current_words.len();
             let suggested_pause_ms = calculate_suggested_pause(duration_ms, word_count);
-            let skip_pause = word_count <= 2;
+
+            // Dialogue speech check: only skip pause if there is no human speech
+            // (e.g. purely non-verbal sounds [Music], (Applause), ♪)
+            let cleaned = clean_speech_dialogue(&sentence_text);
+            let skip_pause = cleaned.is_empty();
 
             sentences.push(LyricSentence {
                 id: sentences.len(),
-                text: cur_text.clone(),
-                start_ms: cur_start_ms,
-                end_ms: cur_end_ms,
+                text: sentence_text,
+                start_ms,
+                end_ms,
                 duration_ms,
                 word_count,
                 suggested_pause_ms,
                 skip_pause,
             });
 
-            is_first_in_chunk = true;
-            cur_text.clear();
+            current_words.clear();
         }
     }
 
@@ -2323,6 +2536,29 @@ mod tests {
         assert_eq!(lyrics_xml.lines[0].text, "Hello XML!");
         assert_eq!(lyrics_xml.lines[0].time_ms, Some(2500));
         assert_eq!(lyrics_xml.lines[0].end_time_ms, Some(5500));
+    }
+
+    #[test]
+    fn test_multi_speaker_dialogue_splitting() {
+        let xml_dialogue = r#"<transcript>
+            <text start="10.0" dur="4.0">- What are you doing here?&#10;- Nothing. Just waiting.</text>
+            <text start="15.0" dur="3.0">&gt;&gt; Look at that! &gt;&gt; Where?</text>
+        </transcript>"#;
+        let lines = parse_caption_xml(xml_dialogue);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].text, "What are you doing here?");
+        assert_eq!(lines[0].time_ms, Some(10000));
+        assert_eq!(lines[1].text, "Nothing. Just waiting.");
+        assert_eq!(lines[2].text, "Look at that!");
+        assert_eq!(lines[3].text, "Where?");
+
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 5);
+        assert_eq!(sentences[0].text, "What are you doing here?");
+        assert_eq!(sentences[1].text, "Nothing.");
+        assert_eq!(sentences[2].text, "Just waiting.");
+        assert_eq!(sentences[3].text, "Look at that!");
+        assert_eq!(sentences[4].text, "Where?");
     }
 
     /// Are the external providers still alive? Hits them all for real, so it is NOT in the default

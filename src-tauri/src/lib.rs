@@ -1212,7 +1212,7 @@ impl PositionThrottle {
         // A jump is any move that couldn't be normal playback since the last emit (+0.75s slack).
         let jumped =
             self.last_pos.is_nan() || (pos - self.last_pos).abs() > dt.as_secs_f64() + 0.75;
-        if jumped || dt >= std::time::Duration::from_millis(250) {
+        if jumped || dt >= std::time::Duration::from_millis(50) {
             self.last_emit = now;
             self.last_pos = pos;
             return true;
@@ -1387,16 +1387,16 @@ mod tests {
     }
 
     #[test]
-    fn steady_playback_throttles_to_250ms() {
+    fn steady_playback_throttles_to_50ms() {
         let mut t = PositionThrottle::new();
         let base = Instant::now();
         // First tick ever → emitted regardless of cadence.
         assert!(t.should_emit(0.0, base));
-        // 100ms later, small forward move → still within the 250ms window, suppressed.
-        assert!(!t.should_emit(0.1, base + Duration::from_millis(100)));
-        assert!(!t.should_emit(0.2, base + Duration::from_millis(200)));
-        // 250ms accumulated since last emit → emitted again.
-        assert!(t.should_emit(0.25, base + Duration::from_millis(250)));
+        // 20ms later, small forward move → still within the 50ms window, suppressed.
+        assert!(!t.should_emit(0.02, base + Duration::from_millis(20)));
+        assert!(!t.should_emit(0.04, base + Duration::from_millis(40)));
+        // 50ms accumulated since last emit → emitted again.
+        assert!(t.should_emit(0.05, base + Duration::from_millis(50)));
     }
 
     #[test]

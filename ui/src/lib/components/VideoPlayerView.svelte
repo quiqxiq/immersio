@@ -267,6 +267,45 @@
 		}
 	}
 
+	// Keep activeSentenceIndex and activeIndex updated whenever video is playing
+	$effect(() => {
+		const posMs = playback.position * 1000;
+		if (shadowing.isWaiting) return;
+
+		const sentences = videoTranscript.sentences;
+		if (sentences && sentences.length > 0) {
+			let foundSentence = -1;
+			for (let s = 0; s < sentences.length; s++) {
+				const st = sentences[s];
+				if (posMs >= st.start_ms && posMs < st.end_ms + 100) {
+					foundSentence = s;
+					break;
+				} else if (posMs >= st.start_ms) {
+					foundSentence = s;
+				}
+			}
+			if (videoTranscript.activeSentenceIndex !== foundSentence) {
+				videoTranscript.activeSentenceIndex = foundSentence;
+			}
+		}
+
+		const lines = videoTranscript.lines;
+		if (lines && lines.length > 0) {
+			let foundLine = -1;
+			for (let i = 0; i < lines.length; i++) {
+				const t = lines[i].time_ms ?? 0;
+				if (posMs >= t) {
+					foundLine = i;
+				} else {
+					break;
+				}
+			}
+			if (videoTranscript.activeIndex !== foundLine) {
+				videoTranscript.activeIndex = foundLine;
+			}
+		}
+	});
+
 	// Smart Sentence-Boundary Auto-Pause & Dynamic Timer Engine
 	$effect(() => {
 		if (!shadowing.active || !shadowing.autoPause) return;
@@ -279,13 +318,17 @@
 			const curSentence = sentences[sIdx];
 			const cleanedSpeech = cleanShadowingDialogue(curSentence.text);
 
-			// Do not pause on non-verbal tags ([Music], [Applause]) or micro-utterances (<= 2 words like "Okay.", "Yeah.")
-			if (curSentence.skip_pause || curSentence.word_count <= 2 || !cleanedSpeech) {
+			// Do not pause on non-verbal tags ([Music], [Applause]) or empty lines
+			if (curSentence.skip_pause || !cleanedSpeech) {
 				return;
 			}
 
-			const endMs = curSentence.end_ms;
-			if (posMs >= endMs - 120 && posMs <= endMs + 800) {
+			// Preemptive pause timing: stop 50-80ms before next cue or at sentence end
+			// so the video NEVER leaks the beginning of the next sentence!
+			const nextStartMs = (sIdx + 1 < sentences.length) ? sentences[sIdx + 1].start_ms : (curSentence.end_ms + 800);
+			const targetPauseMs = Math.min(curSentence.end_ms - 40, nextStartMs - 70);
+
+			if (posMs >= targetPauseMs && posMs <= nextStartMs + 500) {
 				if (!playback.paused && shadowing.lastPausedSentenceId !== curSentence.id) {
 					shadowing.lastPausedSentenceId = curSentence.id;
 					shadowing.isWaiting = true;
@@ -330,9 +373,6 @@
 		const cleanedLine = cleanShadowingDialogue(curLine.text);
 		if (!cleanedLine) return;
 
-		const wordsCount = cleanedLine.split(/\s+/).filter(Boolean).length;
-		if (wordsCount <= 2) return;
-
 		const startMs = curLine.time_ms ?? 0;
 		let endMs: number = curLine.end_time_ms ?? 0;
 		if (endMs <= startMs) {
@@ -343,7 +383,12 @@
 			}
 		}
 
-		if (posMs >= endMs - 120 && posMs <= endMs + 800) {
+		const nextStartMs = (idx + 1 < lines.length && lines[idx + 1].time_ms != null)
+			? lines[idx + 1].time_ms!
+			: endMs + 800;
+		const targetPauseMs = Math.min(endMs - 40, nextStartMs - 70);
+
+		if (posMs >= targetPauseMs && posMs <= nextStartMs + 500) {
 			if (!playback.paused && shadowing.lastPausedSentenceId !== idx) {
 				shadowing.lastPausedSentenceId = idx;
 				shadowing.isWaiting = true;

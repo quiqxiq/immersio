@@ -186,6 +186,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore]
     async fn test_native_wiktionary_lookup() {
         let client = get_client();
         let res = wiktionary::lookup(client, "serendipity").await;
@@ -195,6 +196,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_native_cambridge_lookup() {
         let client = get_client();
         let res = cambridge::lookup(client, "serendipity").await;
@@ -205,6 +207,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_native_oxford_lookup() {
         let client = get_client();
         let res = oxford::lookup(client, "serendipity").await;

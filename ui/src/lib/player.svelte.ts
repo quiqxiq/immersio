@@ -80,12 +80,78 @@ export const videoTranscript = $state({
 	activeSentenceIndex: -1
 });
 
+function cleanDialogueSpeech(text: string): string {
+	return text
+		.replace(/\[[^\]]*\]/g, '')
+		.replace(/\([^\)]*\)/g, '')
+		.replace(/[♪♫>]+/g, '')
+		.replace(/[^a-zA-Z0-9\s]/g, '')
+		.trim();
+}
+
+function splitDialogueLines(rawLines: LyricLine[]): LyricLine[] {
+	const out: LyricLine[] = [];
+	for (const line of rawLines) {
+		const rawText = (line.text || '').replace(/\r/g, '');
+		if (!rawText.trim()) continue;
+
+		const startMs = line.time_ms ?? 0;
+		const durMs = line.end_time_ms ? Math.max(1000, line.end_time_ms - startMs) : 2500;
+
+		const splitParts: string[] = [];
+		const nlParts = rawText.split('\n').map(l => l.trim()).filter(Boolean);
+		if (nlParts.length > 1 && nlParts.slice(1).some(l => /^[-—>]/.test(l))) {
+			splitParts.push(...nlParts);
+		} else if (rawText.includes('>>')) {
+			splitParts.push(...rawText.split('>>').map(s => s.trim()).filter(Boolean));
+		} else {
+			const delim = rawText.includes(' — ') ? ' — ' : (rawText.includes(' - ') ? ' - ' : null);
+			if (delim) {
+				const idx = rawText.indexOf(delim);
+				const left = rawText.slice(0, idx).trim();
+				const lastChar = left.slice(-1);
+				if (/[.?!\"'”’]/.test(lastChar)) {
+					const right = rawText.slice(idx + delim.length).trim();
+					if (left && right) {
+						splitParts.push(left, right);
+					}
+				}
+			}
+		}
+
+		if (splitParts.length <= 1) {
+			out.push(line);
+			continue;
+		}
+
+		const cleanParts = splitParts.map(p => p.replace(/^[-—>]+\s*/, '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+		const wordCounts = cleanParts.map(p => Math.max(1, p.split(/\s+/).filter(Boolean).length));
+		const totalWords = wordCounts.reduce((a, b) => a + b, 0);
+
+		let curMs = startMs;
+		for (let i = 0; i < cleanParts.length; i++) {
+			const partDur = i + 1 === cleanParts.length
+				? Math.max(500, startMs + durMs - curMs)
+				: Math.max(400, Math.round(durMs * (wordCounts[i] / totalWords)));
+			const endMs = curMs + partDur;
+			out.push({
+				time_ms: curMs,
+				end_time_ms: endMs,
+				text: cleanParts[i]
+			});
+			curMs = endMs;
+		}
+	}
+	return out;
+}
+
 /**
  * Client-side sentence reconstruction for transcripts where backend sentences are absent.
  * Aligns raw subtitle lines into complete grammatical sentences with dynamic pause recommendations.
  */
-export function reconstructSentences(lines: LyricLine[]): LyricSentence[] {
-	if (!lines || lines.length === 0) return [];
+export function reconstructSentences(rawLines: LyricLine[]): LyricSentence[] {
+	if (!rawLines || rawLines.length === 0) return [];
+	const lines = splitDialogueLines(rawLines);
 
 	const ABBR_SET = new Set([
 		'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.', 'st.',
@@ -114,6 +180,11 @@ export function reconstructSentences(lines: LyricLine[]): LyricSentence[] {
 		);
 	}
 
+	function isClauseStarter(w: string): boolean {
+		const clean = w.replace(/^[^a-zA-Z]+/, '').toLowerCase();
+		return ['and', 'but', 'so', 'because', 'if', 'when', 'then', 'while', 'although', 'now', 'well', 'or'].includes(clean);
+	}
+
 	function calculatePause(durMs: number, count: number): number {
 		const audioBased = Math.round(durMs * 1.25);
 		const wordBased = count * 450;
@@ -121,83 +192,109 @@ export function reconstructSentences(lines: LyricLine[]): LyricSentence[] {
 		return Math.min(12000, Math.max(1800, base));
 	}
 
-	const sentences: LyricSentence[] = [];
-	let curText = '';
-	let curStartMs = 0;
-	let curEndMs = 0;
-	let isFirstInChunk = true;
+	interface WordToken {
+		text: string;
+		start_ms: number;
+		end_ms: number;
+	}
 
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
-		const text = (line.text || '').trim();
-		if (!text) continue;
+	const words: WordToken[] = [];
+	for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+		const line = lines[lineIdx];
+		const lineText = (line.text || '').trim();
+		if (!lineText) continue;
 
 		const startMs = line.time_ms ?? 0;
-		const endMs = line.end_time_ms ?? startMs + 2500;
+		const endMs = line.end_time_ms ?? (
+			lineIdx + 1 < lines.length && lines[lineIdx + 1].time_ms != null
+				? lines[lineIdx + 1].time_ms!
+				: startMs + Math.max(1500, lineText.split(/\s+/).filter(Boolean).length * 380)
+		);
 
-		if (isFirstInChunk) {
-			curStartMs = startMs;
-			curEndMs = endMs;
-			curText = text;
-			isFirstInChunk = false;
-		} else {
-			curText += ' ' + text;
-			if (endMs > curEndMs) {
-				curEndMs = endMs;
+		if (line.words && line.words.length > 0) {
+			for (const lw of line.words) {
+				words.push({
+					text: lw.text,
+					start_ms: lw.start_ms,
+					end_ms: lw.end_ms
+				});
 			}
+			continue;
 		}
 
-		const isLastLine = i + 1 === lines.length;
-		let shouldBreak = isLastLine;
+		const tokens = lineText.split(/\s+/).filter(Boolean);
+		if (tokens.length === 0) continue;
+
+		const totalDur = Math.max(tokens.length * 200, endMs - startMs);
+		const durPerWord = Math.floor(totalDur / tokens.length);
+
+		for (let wIdx = 0; wIdx < tokens.length; wIdx++) {
+			const wStart = startMs + (wIdx * durPerWord);
+			const wEnd = (wIdx + 1 === tokens.length) ? endMs : (wStart + durPerWord);
+			words.push({
+				text: tokens[wIdx],
+				start_ms: wStart,
+				end_ms: wEnd
+			});
+		}
+	}
+
+	if (words.length === 0) return [];
+
+	const sentences: LyricSentence[] = [];
+	let currentWords: WordToken[] = [];
+
+	for (let i = 0; i < words.length; i++) {
+		const word = words[i];
+		currentWords.push(word);
+
+		const isLastWord = i + 1 === words.length;
+		let shouldBreak = isLastWord;
 
 		if (!shouldBreak) {
-			const nextLine = lines[i + 1];
-			const nextStart = nextLine.time_ms ?? curEndMs;
-			const nextText = (nextLine.text || '').trim();
-			const gapMs = Math.max(0, nextStart - curEndMs);
+			const nextWord = words[i + 1];
+			const gapMs = Math.max(0, nextWord.start_ms - word.end_ms);
 
-			const tokens = curText.split(/\s+/).filter(Boolean);
-			const lastToken = tokens[tokens.length - 1] || '';
-			const hasTerminal = endsWithTerminator(lastToken);
-			const wordsCount = tokens.length;
-			const nextWordsCount = nextText.split(/\s+/).filter(Boolean).length;
-
-			if (hasTerminal) {
-				if (wordsCount <= 2 && gapMs < 1000 && !nextText.startsWith('-')) {
-					shouldBreak = false;
-				} else if (wordsCount <= 4 && nextWordsCount <= 4 && gapMs < 800 && !nextText.startsWith('-')) {
-					shouldBreak = false;
-				} else {
-					shouldBreak = true;
-				}
+			if (nextWord.text.startsWith('-') || nextWord.text.startsWith('—') || nextWord.text.startsWith('>')) {
+				shouldBreak = true;
+			} else if (endsWithTerminator(word.text)) {
+				shouldBreak = true;
+			} else if (gapMs >= 400) {
+				shouldBreak = true;
+			} else if (currentWords.length >= 8) {
+				shouldBreak = true;
+			} else if (gapMs >= 250 && isClauseStarter(nextWord.text)) {
+				shouldBreak = true;
 			} else {
-				if (gapMs >= 1200 || nextText.startsWith('- ') || wordsCount >= 24) {
-					shouldBreak = true;
-				} else {
-					shouldBreak = false;
-				}
+				shouldBreak = false;
 			}
 		}
 
-		if (shouldBreak) {
-			const wordCount = curText.split(/\s+/).filter(Boolean).length;
-			const durationMs = Math.max(0, curEndMs - curStartMs);
+		if (shouldBreak && currentWords.length > 0) {
+			const firstW = currentWords[0];
+			const lastW = currentWords[currentWords.length - 1];
+			const sentenceText = currentWords.map(w => w.text).join(' ');
+
+			const startMs = firstW.start_ms;
+			const endMs = lastW.end_ms;
+			const durationMs = Math.max(0, endMs - startMs);
+			const wordCount = currentWords.length;
 			const suggestedPauseMs = calculatePause(durationMs, wordCount);
-			const skipPause = wordCount <= 2;
+			const cleanedSpeech = cleanDialogueSpeech(sentenceText);
+			const skipPause = cleanedSpeech.length === 0;
 
 			sentences.push({
 				id: sentences.length,
-				text: curText,
-				start_ms: curStartMs,
-				end_ms: curEndMs,
+				text: sentenceText,
+				start_ms: startMs,
+				end_ms: endMs,
 				duration_ms: durationMs,
 				word_count: wordCount,
 				suggested_pause_ms: suggestedPauseMs,
 				skip_pause: skipPause
 			});
 
-			isFirstInChunk = true;
-			curText = '';
+			currentWords = [];
 		}
 	}
 
