@@ -1,12 +1,35 @@
 //! Movie scene shadowing module for Immersio.
 //! Provides curated dialogue scenes strictly between 2-15 minutes for English shadowing.
+//! Each channel fetches 30 most popular + 20 newest videos (with pagination).
 
 use innertube::{InnerTube, SongItem, YouTubeClient};
 use serde_json::Value;
 
 use crate::db::Db;
 
-/// Helper to verify a video duration is strictly between 2 and 15 minutes (120s <= duration <= 900s).
+// ── Channel Registry ────────────────────────────────────────────────────────
+
+/// A curated YouTube channel for movie/drama scene shadowing.
+struct ShadowChannel {
+    slug: &'static str,
+    label: &'static str,
+    channel_id: &'static str,
+}
+
+const CHANNELS: &[ShadowChannel] = &[
+    ShadowChannel { slug: "criticpicks",   label: "Critic Picks",      channel_id: "UCxwQGJztPxV3jqqxp8Cv43g" },
+    ShadowChannel { slug: "clipempire",    label: "Clip Empire",       channel_id: "UCtMEpYpBm3YVo5ijQzUZdLg" },
+    ShadowChannel { slug: "dollartheater", label: "The Dollar Theater", channel_id: "UCFR6sruqEq52xEqjE84tq4A" },
+    ShadowChannel { slug: "binge",         label: "Binge Society",     channel_id: "UCOo_v3eVbfET7_zi2KLOP9g" },
+    ShadowChannel { slug: "firstslasts",   label: "Firsts and Lasts",  channel_id: "UCSxaMpz_ZG05fkp5OFTUO1w" },
+    ShadowChannel { slug: "movieclips",    label: "Movieclips",        channel_id: "UC3gNmTGu-TTbFPpfSs5kNkg" },
+    ShadowChannel { slug: "scenecity",     label: "Scene City",        channel_id: "UC5N2asRYkdATmJ9dtr1fO1w" },
+    ShadowChannel { slug: "omeleto",       label: "Omeleto",           channel_id: "UCTMt7iMWa7jy0fNXIktwyLA" },
+];
+
+// ── Duration Filter ─────────────────────────────────────────────────────────
+
+/// Verify a video duration is strictly between 2 and 15 minutes (120s <= duration <= 900s).
 pub fn is_between_2_and_15_minutes(dur_str: Option<&str>) -> bool {
     let Some(d) = dur_str else { return false };
     let d = d.trim();
@@ -32,12 +55,14 @@ pub fn is_between_2_and_15_minutes(dur_str: Option<&str>) -> bool {
     total_secs >= 120 && total_secs <= 900
 }
 
+// ── Preset Scenes ───────────────────────────────────────────────────────────
+
 fn make_preset(video_id: &str, title: &str, channel: &str, duration: &str) -> SongItem {
     SongItem {
         video_id: video_id.into(),
         title: title.into(),
         artists: channel.into(),
-        album: None, // No CEFR tag
+        album: None,
         duration: Some(duration.into()),
         thumbnail: Some(format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")),
         is_video: true,
@@ -45,23 +70,35 @@ fn make_preset(video_id: &str, title: &str, channel: &str, duration: &str) -> So
     }
 }
 
-/// Curated starter collection of iconic dialogue scenes strictly between 2-15 minutes (without CEFR tags).
+/// Curated starter collection – best-of-best across all channels.
 pub fn starter_scenes() -> Vec<SongItem> {
     vec![
-        make_preset("qM-gZintNWc", "Good Will Hunting - Park Bench Scene (Sean & Will)", "Miramax / Movieclips", "4:36"),
-        make_preset("s5vT8Q2JjZk", "The Social Network - Opening Scene (Mark & Erica)", "Sony Pictures / Movieclips", "4:52"),
-        make_preset("veYR3ZnvY4w", "Dead Poets Society - Carpe Diem (Make Lives Extraordinary)", "Touchstone / Movieclips", "4:48"),
-        make_preset("1XMyx-0j4i0", "Inception - Cafe Dream Scene (Cobb Explains Architecture)", "Warner Bros. / Movieclips", "3:54"),
-        make_preset("nnp2V6aP8vI", "The Dark Knight - Police Interrogation Room (Batman & Joker)", "Warner Bros. / Movieclips", "4:18"),
-        make_preset("g79FhH0p49E", "Friends - Joey & Chandler London Trip Scene", "Learn English With TV Series", "3:22"),
-        make_preset("WaaANll8h18", "The Office - Jim Impersonates Dwight (Bears, Beets)", "Peacock / The Office", "2:14"),
+        // Critic Picks
         make_preset("u0MqWulYGDQ", "King Kong's Brutal Battle With The T-Rex (Full Scene)", "Critic Picks", "5:08"),
-        make_preset("p9DQSnik1mw", "Al Pacino's Iconic Final Speech (Full Scene)", "Critic Picks", "6:15"),
+        make_preset("p9DQSnik1mw", "Al Pacino's Iconic Final Speech (Full Scene) | Scent of a Woman", "Critic Picks", "6:15"),
         make_preset("T4qKtXIKo2w", "Barry Seal Meets CIA Agent Monty Shafer | American Made", "Critic Picks", "5:08"),
+        // Movieclips
+        make_preset("qM-gZintNWc", "Good Will Hunting - Park Bench Scene (Sean & Will)", "Movieclips", "4:36"),
+        make_preset("s5vT8Q2JjZk", "The Social Network - Opening Scene (Mark & Erica)", "Movieclips", "4:52"),
+        make_preset("veYR3ZnvY4w", "Dead Poets Society - Carpe Diem (Make Lives Extraordinary)", "Movieclips", "4:48"),
+        make_preset("1XMyx-0j4i0", "Inception - Cafe Dream Scene (Cobb Explains Architecture)", "Movieclips", "3:54"),
+        make_preset("nnp2V6aP8vI", "The Dark Knight - Interrogation Room (Batman & Joker)", "Movieclips", "4:18"),
+        // Clip Empire
+        make_preset("WaaANll8h18", "The Office - Jim Impersonates Dwight (Bears, Beets)", "Clip Empire", "2:14"),
+        // Binge Society
+        make_preset("78oQxv6VN4Q", "Hannibal Lecter is Discovered by FBI Agent Will Graham (Full Scene) | Red Dragon", "Binge Society", "5:30"),
+        // The Dollar Theater
+        make_preset("J-tJ-9WDLvY", "5 Brutal Cold Gangster Moments", "The Dollar Theater", "8:22"),
+        // Scene City
+        make_preset("uFc_5PFnBj0", "Babe Ruth Plays His Final Game of Baseball (Full Scene) | The Babe", "Scene City", "4:15"),
+        // Omeleto
+        make_preset("COjoicAahjo", "The Greatest Sports Scenes Compilation", "Omeleto", "9:44"),
     ]
 }
 
-/// Recursively find Popular continuation token from YouTube browse response
+// ── YouTube InnerTube Helpers ───────────────────────────────────────────────
+
+/// Recursively find the "Popular" sort continuation token from a channel Videos tab response.
 fn find_popular_token(val: &Value) -> Option<String> {
     match val {
         Value::Object(map) => {
@@ -105,7 +142,39 @@ fn find_popular_token(val: &Value) -> Option<String> {
     None
 }
 
-/// Filter video: strictly 2-15 minutes, non-music, clean album (no CEFR)
+/// Recursively find the next-page continuation token from a browse/continuation response.
+fn find_continuation_token(val: &Value) -> Option<String> {
+    match val {
+        Value::Object(map) => {
+            if let Some(cir) = map.get("continuationItemRenderer") {
+                if let Some(tok) = cir
+                    .get("continuationEndpoint")
+                    .and_then(|ce| ce.get("continuationCommand"))
+                    .and_then(|cc| cc.get("token"))
+                    .and_then(|t| t.as_str())
+                {
+                    return Some(tok.to_string());
+                }
+            }
+            for v in map.values() {
+                if let Some(t) = find_continuation_token(v) {
+                    return Some(t);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                if let Some(t) = find_continuation_token(v) {
+                    return Some(t);
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+/// Filter video: strictly 2-15 minutes, non-music, clean metadata.
 fn filter_scene_item(mut item: SongItem, channel_name: &str) -> Option<SongItem> {
     let title_lower = item.title.to_lowercase();
     if title_lower.contains("official music video")
@@ -129,41 +198,115 @@ fn filter_scene_item(mut item: SongItem, channel_name: &str) -> Option<SongItem>
     Some(item)
 }
 
-/// Fetches 20 most popular and 10 newest videos strictly between 2-15 minutes for a channel.
+/// Fetch videos from a continuation token, collecting items and the next-page token.
+async fn fetch_paginated_videos(
+    cookie: &str,
+    initial_token: &str,
+    channel_name: &str,
+    target: usize,
+    max_pages: usize,
+) -> Vec<SongItem> {
+    let mut all = Vec::new();
+    let mut token = initial_token.to_string();
+
+    for _ in 0..max_pages {
+        let data = match crate::videos::post_browse_continuation(cookie, &token).await {
+            Ok(d) => d,
+            Err(_) => break,
+        };
+
+        let mut page_items = Vec::new();
+        crate::videos::extract_videos(&data, &mut page_items);
+
+        for item in page_items {
+            if let Some(filtered) = filter_scene_item(item, channel_name) {
+                if !all.iter().any(|v: &SongItem| v.video_id == filtered.video_id) {
+                    all.push(filtered);
+                }
+            }
+        }
+
+        if all.len() >= target {
+            break;
+        }
+
+        match find_continuation_token(&data) {
+            Some(next) => token = next,
+            None => break,
+        }
+    }
+
+    all.truncate(target);
+    all
+}
+
+/// Fetch latest videos from a channel's Videos tab with pagination.
+async fn fetch_latest_videos(
+    cookie: &str,
+    channel_id: &str,
+    channel_name: &str,
+    target: usize,
+    max_pages: usize,
+) -> (Vec<SongItem>, Option<String>) {
+    // First page: the Videos tab itself (sorted by Latest by default)
+    let data = match crate::videos::post_browse(cookie, channel_id, Some("EgZ2aWRlb3PyBgQKAjoA")).await {
+        Ok(d) => d,
+        Err(_) => return (Vec::new(), None),
+    };
+
+    let pop_token = find_popular_token(&data);
+
+    let mut raw_items = Vec::new();
+    crate::videos::extract_videos(&data, &mut raw_items);
+
+    let mut all: Vec<SongItem> = raw_items
+        .into_iter()
+        .filter_map(|v| filter_scene_item(v, channel_name))
+        .collect();
+
+    // Paginate if needed
+    if all.len() < target {
+        if let Some(cont) = find_continuation_token(&data) {
+            let remaining = target - all.len();
+            let extra = fetch_paginated_videos(cookie, &cont, channel_name, remaining, max_pages - 1).await;
+            for item in extra {
+                if !all.iter().any(|v| v.video_id == item.video_id) {
+                    all.push(item);
+                }
+            }
+        }
+    }
+
+    all.truncate(target);
+    (all, pop_token)
+}
+
+// ── Main Channel Fetch ──────────────────────────────────────────────────────
+
+/// Fetches 30 most popular + 20 newest videos (2-15 min) for a channel.
+/// Uses pagination to ensure we collect enough items from large channels.
 pub async fn fetch_channel_scenes(
     cookie: &str,
     channel_id: &str,
     channel_name: &str,
 ) -> Result<Vec<SongItem>, String> {
-    // 1. Fetch channel's Videos tab (returns Latest videos by default, and Popular token in chipBar)
-    let data = crate::videos::post_browse(cookie, channel_id, Some("EgZ2aWRlb3PyBgQKAjoA")).await?;
+    const POPULAR_TARGET: usize = 30;
+    const LATEST_TARGET: usize = 20;
+    const MAX_PAGES: usize = 3; // Up to 3 pages (~90 raw videos) per sort
 
-    let mut raw_latest = Vec::new();
-    crate::videos::extract_videos(&data, &mut raw_latest);
+    // 1. Fetch Latest videos + extract Popular token
+    let (latest_videos, pop_token) = fetch_latest_videos(
+        cookie, channel_id, channel_name, LATEST_TARGET, MAX_PAGES,
+    ).await;
 
-    let pop_token = find_popular_token(&data);
-    let mut raw_popular = Vec::new();
-    if let Some(token) = pop_token {
-        if let Ok(pop_data) = crate::videos::post_browse_continuation(cookie, &token).await {
-            crate::videos::extract_videos(&pop_data, &mut raw_popular);
-        }
-    }
+    // 2. Fetch Popular videos using continuation token
+    let popular_videos = if let Some(token) = pop_token {
+        fetch_paginated_videos(cookie, &token, channel_name, POPULAR_TARGET, MAX_PAGES).await
+    } else {
+        Vec::new()
+    };
 
-    // Filter and take up to 20 popular
-    let mut popular_videos: Vec<SongItem> = raw_popular
-        .into_iter()
-        .filter_map(|v| filter_scene_item(v, channel_name))
-        .collect();
-    popular_videos.truncate(20);
-
-    // Filter and take up to 10 latest
-    let mut latest_videos: Vec<SongItem> = raw_latest
-        .into_iter()
-        .filter_map(|v| filter_scene_item(v, channel_name))
-        .collect();
-    latest_videos.truncate(10);
-
-    // Combine: 20 popular first, then 10 latest (dedup by video_id)
+    // 3. Combine: 30 popular first, then 20 latest (dedup by video_id)
     let mut combined = Vec::new();
     for v in popular_videos {
         if !combined.iter().any(|c: &SongItem| c.video_id == v.video_id) {
@@ -178,6 +321,8 @@ pub async fn fetch_channel_scenes(
 
     Ok(combined)
 }
+
+// ── Public API ──────────────────────────────────────────────────────────────
 
 /// Fetch movie and dialogue scenes (strictly 2-15 mins) for English shadowing.
 pub async fn get_shadowing_scenes(
@@ -213,62 +358,36 @@ pub async fn get_shadowing_scenes(
     }
 
     // Category routing
-    match category {
-        "starter" => Ok(starter_scenes()),
-        "criticpicks" => {
-            // @CriticPicks
-            fetch_channel_scenes(&cookie, "UCxwQGJztPxV3jqqxp8Cv43g", "Critic Picks").await
-        }
-        "clipempire" => {
-            // @ClipEmpireChannel
-            fetch_channel_scenes(&cookie, "UCtMEpYpBm3YVo5ijQzUZdLg", "Clip Empire").await
-        }
-        "dollartheater" => {
-            // @TheDollarTheater
-            fetch_channel_scenes(&cookie, "UCFR6sruqEq52xEqjE84tq4A", "The Dollar Theater").await
-        }
-        "binge" => {
-            // @bingesociety
-            fetch_channel_scenes(&cookie, "UCOo_v3eVbfET7_zi2KLOP9g", "Binge Society").await
-        }
-        "firstslasts" => {
-            // @firstsandlastsofficial
-            fetch_channel_scenes(&cookie, "UCSxaMpz_ZG05fkp5OFTUO1w", "Firsts and Lasts").await
-        }
-        "movieclips" => {
-            // Rotten Tomatoes Movieclips
-            fetch_channel_scenes(&cookie, "UC3gNmTGu-TTbFPpfSs5kNkg", "Movieclips").await
-        }
-        "scenecity" => {
-            // Universal Pictures Scene City
-            fetch_channel_scenes(&cookie, "UC5N2asRYkdATmJ9dtr1fO1w", "Scene City").await
-        }
-        "omeleto" => {
-            // Omeleto Short Films
-            fetch_channel_scenes(&cookie, "UCTMt7iMWa7jy0fNXIktwyLA", "Omeleto").await
-        }
-        "series" => {
-            // Learn English With TV Series
-            fetch_channel_scenes(&cookie, "UCKgpamMlm872zkGDcBJHYDg", "Learn English With TV Series").await
-        }
-        _ => {
-            // "all" - Combine starter presets with top popular scenes from Critic Picks, Binge Society, and Movieclips
-            let mut results = starter_scenes();
-            if let Ok(critic_scenes) = fetch_channel_scenes(&cookie, "UCxwQGJztPxV3jqqxp8Cv43g", "Critic Picks").await {
-                for item in critic_scenes.into_iter().take(10) {
-                    if !results.iter().any(|r| r.video_id == item.video_id) {
-                        results.push(item);
-                    }
-                }
-            }
-            if let Ok(binge_scenes) = fetch_channel_scenes(&cookie, "UCOo_v3eVbfET7_zi2KLOP9g", "Binge Society").await {
-                for item in binge_scenes.into_iter().take(10) {
-                    if !results.iter().any(|r| r.video_id == item.video_id) {
-                        results.push(item);
-                    }
-                }
-            }
-            Ok(results)
+    if category == "starter" {
+        return Ok(starter_scenes());
+    }
+
+    // Check if category matches a known channel
+    for ch in CHANNELS {
+        if ch.slug == category {
+            return fetch_channel_scenes(&cookie, ch.channel_id, ch.label).await;
         }
     }
+
+    // "all" / default: fetch top scenes from every channel concurrently-ish, merge & dedup
+    if category == "all" {
+        let mut results = Vec::new();
+        // Fetch 8 popular + 4 latest from every channel
+        for ch in CHANNELS {
+            match fetch_channel_scenes(&cookie, ch.channel_id, ch.label).await {
+                Ok(scenes) => {
+                    for item in scenes {
+                        if !results.iter().any(|r: &SongItem| r.video_id == item.video_id) {
+                            results.push(item);
+                        }
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        return Ok(results);
+    }
+
+    // Unknown category: starter fallback
+    Ok(starter_scenes())
 }

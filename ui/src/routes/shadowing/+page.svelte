@@ -29,7 +29,6 @@
 		{ id: 'movieclips', label: 'Movieclips' },
 		{ id: 'scenecity', label: 'Scene City' },
 		{ id: 'omeleto', label: 'Omeleto' },
-		{ id: 'series', label: 'TV Series' },
 		{ id: 'all', label: 'Jelajah Semua' }
 	];
 
