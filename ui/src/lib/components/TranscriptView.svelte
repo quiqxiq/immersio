@@ -3,7 +3,8 @@
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import { SubtitleIcon } from '@hugeicons/core-free-icons';
 	import * as api from '$lib/api';
-	import { playback, shadowing, videoTranscript, reconstructSentences } from '$lib/player.svelte';
+	import { playback, shadowing, videoTranscript } from '$lib/player.svelte';
+	import { reconstructSentences } from '$lib/shadow-segment';
 	import WordPopup from '$lib/components/WordPopup.svelte';
 	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
 	import { vocab } from '$lib/vocab.svelte';

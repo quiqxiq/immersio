@@ -1087,6 +1087,8 @@ export interface Lyrics {
 	instrumental: boolean;
 	lines: LyricLine[];
 	sentences?: LyricSentence[];
+	/** Segmentation generation the stored `sentences` came from (2 = the speaker-turn rules). */
+	seg_version?: number;
 	/** The source was picked by hand for this song (or its timing nudged). */
 	pinned: boolean;
 	/** Timing nudge in ms, positive = lyrics later. */

@@ -154,6 +154,10 @@ pub struct Lyrics {
     pub lines: Vec<LyricLine>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sentences: Option<Vec<LyricSentence>>,
+    /// Segmentation generation the stored `sentences` came from. Caches below the current one are
+    /// re-cut on load (see `ensure_segmentation`), so an upgrade never pins stale cards on a user.
+    #[serde(default)]
+    pub seg_version: u32,
     /// Picked by hand, or its timing nudged: kept when the provider order changes.
     #[serde(default)]
     pub pinned: bool,
@@ -184,8 +188,9 @@ pub async fn get_lyrics(
         Some(id) => {
             if id == "youtube" {
                 if let Some(Some(json)) = state.db.get_lyrics(&video_id, now_secs(), MISS_TTL_SECS) {
-                    if let Ok(cached) = serde_json::from_str::<Lyrics>(&json) {
+                    if let Ok(mut cached) = serde_json::from_str::<Lyrics>(&json) {
                         if cached.source.starts_with("YouTube") || (cached.synced && !cached.lines.is_empty()) {
+                            resegment_cached(state, &video_id, &mut cached);
                             return Ok(Some(cached));
                         }
                     }
@@ -205,9 +210,9 @@ pub async fn get_lyrics(
     };
     Ok(lyrics.map(|mut l| {
         crate::romanize::fill(&mut l);
-        if l.sentences.is_none() && l.synced && !l.lines.is_empty() {
-            l.sentences = Some(reconstruct_sentences(&l.lines));
-        }
+        // A cache from the source picker or an older fetch can still carry an older segmentation:
+        // rebuild it and store it once, so every later open reads the current cards.
+        resegment_cached(state, &video_id, &mut l);
         l
     }))
 }
@@ -235,9 +240,7 @@ pub async fn choose_source(
         }
     };
     crate::romanize::fill(&mut lyrics);
-    if lyrics.sentences.is_none() && lyrics.synced && !lyrics.lines.is_empty() {
-        lyrics.sentences = Some(reconstruct_sentences(&lyrics.lines));
-    }
+    resegment_cached(state, &video_id, &mut lyrics);
     Some(lyrics)
 }
 
@@ -255,14 +258,39 @@ pub fn set_offset(state: &AppState, video_id: &str, offset_ms: i64) {
     }
 }
 
+/// Bumped whenever `reconstruct_sentences` changes shape. Cached lyrics record the generation they
+/// were segmented with, so an upgrade re-cuts old entries on load instead of refetching them.
+pub const SEGMENTATION_VERSION: u32 = 2;
+
+/// Rebuild `sentences` when the cache predates this segmentation or never had them. True when it
+/// recomputed (the caller's copy then differs from what the cache still holds).
+fn ensure_segmentation(l: &mut Lyrics) -> bool {
+    if !l.synced || l.lines.is_empty() {
+        return false;
+    }
+    if l.sentences.is_some() && l.seg_version >= SEGMENTATION_VERSION {
+        return false;
+    }
+    l.sentences = Some(reconstruct_sentences(&l.lines));
+    l.seg_version = SEGMENTATION_VERSION;
+    true
+}
+
+/// Re-segment a cached entry and write it back once, so the rebuild does not repeat on every open.
+fn resegment_cached(state: &AppState, video_id: &str, l: &mut Lyrics) {
+    if ensure_segmentation(l) {
+        if let Ok(json) = serde_json::to_string(l) {
+            state.db.put_lyrics(video_id, Some(&json), now_secs());
+        }
+    }
+}
+
 async fn cached_or_fetched(state: &AppState, req: LyricsRequest) -> Option<Lyrics> {
     let now = now_secs();
     let video_id = req.video_id.clone();
     if let Some(cached) = state.db.get_lyrics(&video_id, now, MISS_TTL_SECS) {
         if let Some(mut l) = cached.and_then(|json| serde_json::from_str::<Lyrics>(&json).ok()) {
-            if l.sentences.is_none() && l.synced && !l.lines.is_empty() {
-                l.sentences = Some(reconstruct_sentences(&l.lines));
-            }
+            resegment_cached(state, &video_id, &mut l);
             return Some(l);
         }
         return None;
@@ -728,6 +756,7 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
                 source: format!("YouTube Subtitles ({label})"),
                 synced: true,
                 sentences: Some(sentences),
+                seg_version: SEGMENTATION_VERSION,
                 lines,
                 ..Default::default()
             });
@@ -742,6 +771,7 @@ fn parse_caption_body(body_text: &str, label: &str) -> Option<Lyrics> {
             source: format!("YouTube Subtitles ({label})"),
             synced: true,
             sentences: Some(sentences),
+            seg_version: SEGMENTATION_VERSION,
             lines: xml_lines,
             ..Default::default()
         });
@@ -912,6 +942,7 @@ async fn try_fetch_cloud_transcript_url(
         source: format!("YouTube Subtitles{lang_str}"),
         synced: true,
         sentences: Some(sentences),
+        seg_version: SEGMENTATION_VERSION,
         lines,
         ..Default::default()
     })
@@ -976,6 +1007,7 @@ async fn youtube_get(
                             source: "YouTube Music".into(),
                             synced: true,
                             sentences: Some(sentences),
+                            seg_version: SEGMENTATION_VERSION,
                             lines: l_lines,
                             ..Default::default()
                         }));
@@ -2179,7 +2211,9 @@ fn strip_xml_tags(s: &str) -> String {
 
 /// Check if a word represents an abbreviation (e.g. Mr., Dr., U.S., etc.) rather than a sentence end
 fn is_abbreviation(word: &str) -> bool {
-    let clean = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ')' || c == ']' || c == '“' || c == '”' || c == '‘' || c == '’');
+    let clean = word.trim_matches(|c: char| {
+        matches!(c, '"' | '\'' | '(' | ')' | ']' | '“' | '”' | '‘' | '’')
+    });
     let lower = clean.to_lowercase();
     
     // Check known titles and abbreviations
@@ -2200,7 +2234,9 @@ fn is_abbreviation(word: &str) -> bool {
 
 /// Check if a word ends with a sentence terminal punctuation mark (. ? !)
 fn ends_with_sentence_terminator(word: &str) -> bool {
-    let trimmed = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ')' || c == ']' || c == '”' || c == '’');
+    let trimmed = word.trim_matches(|c: char| {
+        matches!(c, '"' | '\'' | '(' | ')' | ']' | '“' | '”' | '’')
+    });
     if is_abbreviation(trimmed) {
         return false;
     }
@@ -2269,13 +2305,216 @@ struct WordToken {
     end_ms: u64,
 }
 
-/// Reconstruct full grammatical sentences from raw subtitle cues with natural boundaries
-pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
-    if lines.is_empty() {
-        return Vec::new();
+// --- Shadowing sentence segmentation v2 ----------------------------------------------------------
+//
+// Tuned against the cached-caption corpus in `docs/shadowing-lab` (see RESULTS.md there): speaker
+// markers and non-verbal tags bound cards but never become one, punctuated transcripts are cut
+// only at real sentence ends (plus a big-silence and a salvage net for ASR runs that forgot
+// punctuation), and very short utterances attach to the sentence they continue. The lab's
+// `prototype/segment_v2.py` is the reference implementation; change the numbers there first, then
+// mirror them here and re-run `python3 prototype/lab.py stats`.
+
+/// Punctuated transcripts: forced cut only on a silence this large (never mid-sentence).
+const SEG_V2_GAP_PUNCT_MS: u64 = 2000;
+/// A silence this large is never mid-sentence: cut even after "the" or "of".
+const SEG_V2_GAP_ALWAYS_MS: u64 = 3000;
+/// Salvage net inside a run without sentence terminators: after this many words, a pause of
+/// `SEG_V2_SALVAGE_GAP_MS` ends the card …
+const SEG_V2_SALVAGE_AT: usize = 14;
+const SEG_V2_SALVAGE_GAP_MS: u64 = 800;
+/// … a soft cap needs a small pause …
+const SEG_V2_SALVAGE_SOFT: usize = 30;
+const SEG_V2_SALVAGE_SOFT_GAP_MS: u64 = 500;
+/// … a hard cap a tiny one …
+const SEG_V2_SALVAGE_HARD: usize = 42;
+const SEG_V2_SALVAGE_HARD_GAP_MS: u64 = 250;
+/// … and past the absolute cap, cut regardless.
+const SEG_V2_SALVAGE_ABS: usize = 50;
+/// Unpunctuated transcripts: a pause this long is a sentence break.
+const SEG_V2_GAP_ASR_MS: u64 = 900;
+/// Unpunctuated: a clause starter after a shorter pause.
+const SEG_V2_GAP_CLAUSE_MS: u64 = 400;
+const SEG_V2_MIN_WORDS_FOR_CLAUSE: usize = 5;
+/// Unpunctuated: the soft cap needs a small pause; the hard cap is the safety bound.
+const SEG_V2_SOFT_CAP: usize = 20;
+const SEG_V2_SOFT_GAP_MS: u64 = 250;
+const SEG_V2_HARD_CAP: usize = 28;
+const SEG_V2_HARD_CAP_GAP_MS: u64 = 150;
+/// Past this many words the incomplete-ending guard gives way.
+const SEG_V2_HARD_ESCAPE: usize = 36;
+/// Short-utterance merging (see `v2_merge_short_into_prev` / `v2_merge_short_forward`).
+const SEG_V2_MERGE_MAX_WORDS: usize = 2;
+const SEG_V2_MERGE_BACK_GAP_MS: u64 = 900;
+const SEG_V2_MERGE_REPEAT_GAP_MS: u64 = 800;
+const SEG_V2_MERGE_FORWARD_GAP_MS: u64 = 250;
+
+/// A speaker-turn marker ("-", "—", ">>") or a pure non-verbal tag: it bounds a card but is
+/// never part of one.
+fn is_marker_token(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty() && t.chars().all(|c| c == '-' || c == '—' || c == '>')
+}
+
+fn is_separator_token(text: &str) -> bool {
+    is_marker_token(text) || is_non_verbal(text)
+}
+
+/// Strip a speaker marker glued to the first word of a turn ("-Hello", ">>She"): the word stays,
+/// the marker does not — but the turn boundary it marks does (the caller flushes first).
+fn strip_marker_prefix(text: &str) -> String {
+    let body = match text.find(|c: char| c != '-' && c != '—' && c != '>') {
+        Some(0) => text,
+        Some(idx) => &text[idx..],
+        None => "",
+    };
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        text.trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// A sentence terminator, with multi-letter initials ("A.A.", "J.R.") read as one word: the
+/// abbreviation list already covers "Mr." and single initials, but not those.
+fn is_sentence_terminator_v2(text: &str) -> bool {
+    static RE_INITIALS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE_INITIALS.get_or_init(|| regex::Regex::new(r"^([A-Za-z]\.){2,}$").unwrap());
+    let trimmed = text
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | ']' | '“' | '”' | '’'));
+    !re.is_match(trimmed) && ends_with_sentence_terminator(text)
+}
+
+/// One candidate card while segmenting. `reason` is the boundary that closed it; the merges need
+/// it to tell a sentence end after a silence from one after a speaker turn.
+struct V2Card {
+    text: String,
+    start_ms: u64,
+    end_ms: u64,
+    word_count: usize,
+    reason: &'static str,
+}
+
+/// Accumulates cards while walking the word stream (quotes decide whether a full stop is a real
+/// sentence end or sits inside a quotation).
+struct V2Builder {
+    cards: Vec<V2Card>,
+    current: Vec<(WordToken, String)>,
+    quotes_double: usize,
+    quotes_left: usize,
+    quotes_right: usize,
+}
+
+impl V2Builder {
+    fn new() -> Self {
+        Self {
+            cards: Vec::new(),
+            current: Vec::new(),
+            quotes_double: 0,
+            quotes_left: 0,
+            quotes_right: 0,
+        }
     }
 
-    // 1. Flatten all lines into a stream of timestamped word tokens
+    fn inside_quote(&self) -> bool {
+        self.quotes_double % 2 == 1 || self.quotes_left > self.quotes_right
+    }
+
+    fn flush(&mut self, reason: &'static str) {
+        if !self.current.is_empty() {
+            let text = self
+                .current
+                .iter()
+                .map(|(_, clean)| clean.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            // Non-verbal-only runs are never cards (they still show in the transcript lines).
+            if !clean_speech_dialogue(&text).is_empty() {
+                let first = &self.current.first().unwrap().0;
+                let last = &self.current.last().unwrap().0;
+                self.cards.push(V2Card {
+                    text,
+                    start_ms: first.start_ms,
+                    end_ms: last.end_ms,
+                    word_count: self.current.len(),
+                    reason,
+                });
+            }
+        }
+        self.current.clear();
+        self.quotes_double = 0;
+        self.quotes_left = 0;
+        self.quotes_right = 0;
+    }
+}
+
+fn v2_join_text(a: &str, b: &str) -> String {
+    format!("{} {}", a.trim(), b.trim()).trim().to_string()
+}
+
+fn v2_same_word(a: &str, b: &str) -> bool {
+    let a = clean_speech_dialogue(a).to_lowercase();
+    let b = clean_speech_dialogue(b).to_lowercase();
+    !a.is_empty() && a == b
+}
+
+/// Attach very short utterances to the previous card when they clearly continue it: that card
+/// ended at a silence (the short piece is the rest of the sentence) or the two repeat each other.
+fn v2_merge_short_into_prev(cards: Vec<V2Card>) -> Vec<V2Card> {
+    let mut out: Vec<V2Card> = Vec::with_capacity(cards.len());
+    for card in cards {
+        if !out.is_empty() && card.word_count <= SEG_V2_MERGE_MAX_WORDS {
+            let prev = out.last_mut().unwrap();
+            let gap = card.start_ms.saturating_sub(prev.end_ms);
+            let after_silence = matches!(prev.reason, "silence" | "salvage-silence")
+                && gap >= SEG_V2_MERGE_BACK_GAP_MS;
+            let repeat = prev.word_count <= SEG_V2_MERGE_MAX_WORDS
+                && gap <= SEG_V2_MERGE_REPEAT_GAP_MS
+                && v2_same_word(&prev.text, &card.text);
+            if after_silence || repeat {
+                prev.text = v2_join_text(&prev.text, &card.text);
+                prev.end_ms = card.end_ms;
+                prev.word_count += card.word_count;
+                continue;
+            }
+        }
+        out.push(card);
+    }
+    out
+}
+
+/// A short utterance followed immediately by more speech becomes the next card's prefix — unless
+/// it starts a speaker turn (a marker precedes it): turns must stay apart.
+fn v2_merge_short_forward(cards: Vec<V2Card>) -> Vec<V2Card> {
+    let mut out = cards;
+    let mut i = 0;
+    while i < out.len() {
+        let short = out[i].word_count <= SEG_V2_MERGE_MAX_WORDS;
+        let starts_turn = out[i].reason == "marker" || (i > 0 && out[i - 1].reason == "marker");
+        if short && !starts_turn && i + 1 < out.len() {
+            let gap_after = out[i + 1].start_ms.saturating_sub(out[i].end_ms);
+            let gap_before = if i > 0 {
+                out[i].start_ms.saturating_sub(out[i - 1].end_ms)
+            } else {
+                u64::MAX
+            };
+            if gap_after <= SEG_V2_MERGE_FORWARD_GAP_MS && gap_after <= gap_before {
+                let card = out.remove(i);
+                let next = &mut out[i];
+                next.text = v2_join_text(&card.text, &next.text);
+                next.start_ms = card.start_ms;
+                next.word_count += card.word_count;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Flatten subtitle cues into one timestamped word stream (missing word timings interpolated).
+fn flatten_words(lines: &[LyricLine]) -> Vec<WordToken> {
     let mut words: Vec<WordToken> = Vec::new();
 
     for (line_idx, line) in lines.iter().enumerate() {
@@ -2305,7 +2544,8 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
                         });
                     } else {
                         let num_sub_tokens = sub_tokens.len();
-                        let total_sub_dur = lw.end_ms.saturating_sub(lw.start_ms).max(num_sub_tokens as u64 * 150);
+                        let total_sub_dur =
+                            lw.end_ms.saturating_sub(lw.start_ms).max(num_sub_tokens as u64 * 150);
                         let sub_dur = total_sub_dur / num_sub_tokens as u64;
                         for (w_sub_idx, w_sub) in sub_tokens.into_iter().enumerate() {
                             let w_sub_start = lw.start_ms + (w_sub_idx as u64 * sub_dur);
@@ -2326,7 +2566,7 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
             }
         }
 
-        // Interpolate word timestamps across line duration
+        // Interpolate word timestamps across the line duration
         let line_word_tokens: Vec<&str> = line_text.split_whitespace().collect();
         let total_words = line_word_tokens.len();
         if total_words == 0 {
@@ -2351,129 +2591,115 @@ pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
         }
     }
 
-    if words.is_empty() {
+    words
+}
+
+/// Reconstruct full grammatical sentences from raw subtitle cues with natural boundaries (v2 —
+/// speaker turns kept apart, single sentences never cut; see the notes above).
+pub fn reconstruct_sentences(lines: &[LyricLine]) -> Vec<LyricSentence> {
+    let tokens = flatten_words(lines);
+    if tokens.is_empty() {
         return Vec::new();
     }
 
-    let has_punctuation = words.iter().any(|w| ends_with_sentence_terminator(&w.text));
+    let has_punctuation = tokens
+        .iter()
+        .filter(|w| !is_separator_token(&w.text))
+        .any(|w| ends_with_sentence_terminator(&w.text));
 
-    // 2. Segment words into complete grammatical sentences
-    let mut sentences: Vec<LyricSentence> = Vec::new();
-    let mut current_words: Vec<WordToken> = Vec::new();
-
-    let total_words = words.len();
-    for i in 0..total_words {
-        let word = &words[i];
-        current_words.push(word.clone());
-
-        let is_last_word = i + 1 == total_words;
-        let mut should_break = is_last_word;
-
-        if !should_break {
-            let next_word = &words[i + 1];
-            let gap_ms = next_word.start_ms.saturating_sub(word.end_ms);
-            let w_text = &word.text;
-            let next_text = &next_word.text;
-
-            // 1. Non-verbal audio tags (e.g. [Music], (Applause)) stand alone
-            if is_non_verbal(w_text) || is_non_verbal(next_text) {
-                should_break = true;
-            }
-            // 2. Definite speaker change indicator on next word: ALWAYS BREAK!
-            else if next_text.starts_with('-') || next_text.starts_with('—') || next_text.starts_with('>') {
-                should_break = true;
-            }
-            // 3. Incomplete ending guard: NEVER break mid-phrase (e.g. after 'an', 'too', 'with', 'the')
-            // unless terminal punctuation or a speaker change occurred above
-            else if is_incomplete_ending(w_text) {
-                should_break = false;
-            }
-            // 4. Significant silence gap between speech (>= 1500ms)
-            else if gap_ms >= 1500 {
-                should_break = true;
-            }
-            // 5. Punctuated transcript:
-            else if has_punctuation {
-                // Terminal punctuation (. ? ! ...) marks a complete sentence boundary
-                if ends_with_sentence_terminator(w_text) {
-                    should_break = true;
-                }
-                // Long run-on sentence safeguard (> 18 words)
-                else if current_words.len() >= 18 {
-                    // Lookahead: count how many words remain until the next sentence terminator
-                    let mut words_until_terminal = 0;
-                    for nw in words.iter().skip(i + 1).take(20) {
-                        words_until_terminal += 1;
-                        if ends_with_sentence_terminator(&nw.text) {
-                            break;
-                        }
-                    }
-                    // Only split if the next sentence terminator is far away (> 4 words),
-                    // NEVER leaving an awkward 1-4 word orphan at the end
-                    if words_until_terminal > 4 {
-                        if gap_ms >= 300 || w_text.ends_with(',') || w_text.ends_with(';') {
-                            should_break = true;
-                        } else if gap_ms >= 600 {
-                            should_break = true;
-                        }
-                    }
-                }
-            }
-            // 6. Subtitles without terminal punctuation (e.g. pure raw ASR captions without periods):
-            else {
-                // Break on natural speech breathing pause (>= 450ms)
-                if gap_ms >= 450 {
-                    should_break = true;
-                }
-                // Natural clause boundary after short pause (>= 250ms)
-                else if gap_ms >= 250 && is_clause_starter(next_text) && current_words.len() >= 5 {
-                    should_break = true;
-                }
-                // Working memory chunk limit (9-14 words) for comfortable shadowing
-                else if current_words.len() >= 9 {
-                    if gap_ms >= 200 || current_words.len() >= 14 {
-                        should_break = true;
-                    }
-                }
-            }
+    let mut builder = V2Builder::new();
+    for (i, raw) in tokens.iter().enumerate() {
+        if is_separator_token(&raw.text) {
+            // Markers and non-verbal tags bound the turn; they are never part of a card.
+            builder.flush("marker");
+            continue;
         }
 
-        if should_break && !current_words.is_empty() {
-            let first_w = current_words.first().unwrap();
-            let last_w = current_words.last().unwrap();
-            let sentence_text = current_words
-                .iter()
-                .map(|w| w.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
+        let clean_text = strip_marker_prefix(&raw.text);
+        if clean_text != raw.text.trim() {
+            // A word carrying a marker prefix ("-Hello", ">>She") starts a speaker turn.
+            builder.flush("marker");
+        }
 
-            let start_ms = first_w.start_ms;
-            let end_ms = last_w.end_ms;
-            let duration_ms = end_ms.saturating_sub(start_ms);
-            let word_count = current_words.len();
-            let suggested_pause_ms = calculate_suggested_pause(duration_ms, word_count);
+        builder.current.push((raw.clone(), clean_text.clone()));
+        builder.quotes_double += clean_text.matches('"').count();
+        builder.quotes_left += clean_text.matches('“').count();
+        builder.quotes_right += clean_text.matches('”').count();
 
-            // Dialogue speech check: only skip pause if there is no human speech
-            // (e.g. purely non-verbal sounds [Music], (Applause), ♪)
-            let cleaned = clean_speech_dialogue(&sentence_text);
-            let skip_pause = cleaned.is_empty();
+        let Some(next) = tokens.get(i + 1) else { continue };
+        if is_separator_token(&next.text) {
+            continue;
+        }
+        let gap = next.start_ms.saturating_sub(raw.end_ms);
+        let cur_len = builder.current.len();
 
-            sentences.push(LyricSentence {
-                id: sentences.len(),
-                text: sentence_text,
-                start_ms,
-                end_ms,
-                duration_ms,
-                word_count,
-                suggested_pause_ms,
-                skip_pause,
-            });
+        if has_punctuation {
+            if is_sentence_terminator_v2(&clean_text) && !builder.inside_quote() {
+                builder.flush("terminator");
+            } else if cur_len >= SEG_V2_SALVAGE_ABS {
+                builder.flush("salvage-cap");
+            } else if cur_len >= SEG_V2_SALVAGE_HARD && gap >= SEG_V2_SALVAGE_HARD_GAP_MS {
+                builder.flush("salvage-cap");
+            } else if cur_len >= SEG_V2_SALVAGE_SOFT && gap >= SEG_V2_SALVAGE_SOFT_GAP_MS {
+                builder.flush("salvage-cap");
+            } else if cur_len >= SEG_V2_SALVAGE_AT && gap >= SEG_V2_SALVAGE_GAP_MS {
+                builder.flush("salvage-silence");
+            } else if cur_len >= SEG_V2_SALVAGE_AT
+                && clean_text.ends_with(',')
+                && gap >= SEG_V2_SALVAGE_SOFT_GAP_MS
+            {
+                builder.flush("salvage-comma");
+            } else if gap >= SEG_V2_GAP_ALWAYS_MS {
+                // A 3-second pause is never mid-sentence; cut regardless.
+                builder.flush("silence");
+            } else if gap >= SEG_V2_GAP_PUNCT_MS && !is_incomplete_ending(&clean_text) {
+                builder.flush("silence");
+            }
+            continue;
+        }
 
-            current_words.clear();
+        // Unpunctuated transcript (raw ASR without periods).
+        if cur_len >= SEG_V2_HARD_ESCAPE {
+            builder.flush("cap");
+        } else if is_incomplete_ending(&clean_text) {
+            // Never end a card on "the", "of", "to": the sentence continues.
+        } else if cur_len >= SEG_V2_HARD_CAP && gap >= SEG_V2_HARD_CAP_GAP_MS {
+            builder.flush("cap");
+        } else if is_sentence_terminator_v2(&clean_text) && !builder.inside_quote() {
+            // A terminator the ASR did sprinkle in still ends the sentence.
+            builder.flush("terminator");
+        } else if gap >= SEG_V2_GAP_ASR_MS {
+            builder.flush("silence");
+        } else if gap >= SEG_V2_GAP_CLAUSE_MS
+            && is_clause_starter(&next.text)
+            && cur_len >= SEG_V2_MIN_WORDS_FOR_CLAUSE
+        {
+            builder.flush("clause");
+        } else if cur_len >= SEG_V2_SOFT_CAP
+            && (gap >= SEG_V2_SOFT_GAP_MS || cur_len >= SEG_V2_HARD_CAP)
+        {
+            builder.flush("cap");
         }
     }
+    builder.flush("end");
 
-    sentences
+    v2_merge_short_forward(v2_merge_short_into_prev(builder.cards))
+        .into_iter()
+        .enumerate()
+        .map(|(id, card)| {
+            let duration_ms = card.end_ms.saturating_sub(card.start_ms);
+            LyricSentence {
+                id,
+                text: card.text,
+                start_ms: card.start_ms,
+                end_ms: card.end_ms,
+                duration_ms,
+                word_count: card.word_count,
+                suggested_pause_ms: calculate_suggested_pause(duration_ms, card.word_count),
+                skip_pause: false,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2848,12 +3074,13 @@ mod tests {
         assert_eq!(lines[3].text, "Where?");
 
         let sentences = reconstruct_sentences(&lines);
-        assert_eq!(sentences.len(), 5);
+        // One card per turn now: "Nothing." is the same speaker continuing, so the two tiny
+        // lines join back into "Nothing. Just waiting." instead of leaving a 1-word card.
+        assert_eq!(sentences.len(), 4);
         assert_eq!(sentences[0].text, "What are you doing here?");
-        assert_eq!(sentences[1].text, "Nothing.");
-        assert_eq!(sentences[2].text, "Just waiting.");
-        assert_eq!(sentences[3].text, "Look at that!");
-        assert_eq!(sentences[4].text, "Where?");
+        assert_eq!(sentences[1].text, "Nothing. Just waiting.");
+        assert_eq!(sentences[2].text, "Look at that!");
+        assert_eq!(sentences[3].text, "Where?");
     }
 
     #[test]
@@ -3031,6 +3258,330 @@ mod tests {
         assert_eq!(sentences.len(), 2);
         assert_eq!(sentences[0].text, "we were walking down the street yesterday");
         assert_eq!(sentences[1].text, "and then we saw this incredible show");
+    }
+
+    /// The lab's marker rule: a speaker marker bounds the card before it but is never text in a
+    /// card, and a fragment that starts a turn does not merge forward (turns stay apart).
+    #[test]
+    fn markers_bound_turns_and_are_never_cards() {
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                text: ">> What are you doing here?".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(3000),
+                text: ">> Nothing.".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(4500),
+                text: "Just waiting.".into(),
+                ..Default::default()
+            },
+        ];
+        let sentences = reconstruct_sentences(&lines);
+        assert!(sentences.iter().all(|s| !s.text.contains('>')));
+        let texts: Vec<&str> = sentences.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["What are you doing here?", "Nothing.", "Just waiting."]);
+    }
+
+    /// A marker glued to the first word ("-Hello") starts the turn with the marker stripped.
+    #[test]
+    fn marker_prefix_is_stripped_and_starts_the_turn() {
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(3000),
+                text: "This is the first sentence.".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(3200),
+                text: "-Hello there.".into(),
+                ..Default::default()
+            },
+        ];
+        let sentences = reconstruct_sentences(&lines);
+        let texts: Vec<&str> = sentences.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["This is the first sentence.", "Hello there."]);
+    }
+
+    /// Multi-letter initials read as one word: "A.A." / "J.R." are not sentence ends.
+    #[test]
+    fn initials_do_not_end_a_sentence() {
+        let lines = vec![LyricLine {
+            time_ms: Some(1000),
+            text: "A.A. Ron is here. J.R. too.".into(),
+            ..Default::default()
+        }];
+        let sentences = reconstruct_sentences(&lines);
+        let texts: Vec<&str> = sentences.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["A.A. Ron is here.", "J.R. too."]);
+    }
+
+    /// Non-verbal tags stay in the transcript lines but are not cards at all.
+    #[test]
+    fn non_verbal_tags_are_not_cards() {
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                text: "[Music]".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(2000),
+                end_time_ms: Some(5000),
+                text: "Hello there.".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(5000),
+                end_time_ms: Some(7000),
+                text: "(applause)".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(7000),
+                end_time_ms: Some(9000),
+                text: "♪".into(),
+                ..Default::default()
+            },
+        ];
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 1);
+        assert_eq!(sentences[0].text, "Hello there.");
+        assert!(sentences.iter().all(|s| !s.skip_pause));
+    }
+
+    /// Salvage net: a long stretch without terminators is cut on a real pause, not left as one
+    /// mega-card (the ASR-lost-the-dots case).
+    #[test]
+    fn salvage_cuts_a_long_run_without_terminators() {
+        let words: Vec<LyricWord> = (1..=16)
+            .map(|i| LyricWord {
+                text: format!("w{i}"),
+                start_ms: 1000 + (i as u64 - 1) * 1000,
+                end_ms: 2000 + (i as u64 - 1) * 1000,
+            })
+            .collect();
+        let text = (1..=16).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(17000),
+                text,
+                words: Some(words),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(17900),
+                end_time_ms: Some(19900),
+                text: "seventeen eighteen nineteen twenty.".into(),
+                words: Some(vec![
+                    LyricWord { text: "seventeen".into(), start_ms: 17900, end_ms: 18400 },
+                    LyricWord { text: "eighteen".into(), start_ms: 18400, end_ms: 18900 },
+                    LyricWord { text: "nineteen".into(), start_ms: 18900, end_ms: 19400 },
+                    LyricWord { text: "twenty.".into(), start_ms: 19400, end_ms: 19900 },
+                ]),
+                ..Default::default()
+            },
+        ];
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 2);
+        assert_eq!(sentences[0].word_count, 16);
+        assert_eq!(sentences[0].end_ms, 17000);
+        assert_eq!(sentences[1].text, "seventeen eighteen nineteen twenty.");
+    }
+
+    /// Unpunctuated runs stay bounded (the soft/hard caps) instead of one giant card.
+    #[test]
+    fn unpunctuated_runs_stay_bounded() {
+        let text = (0..60).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
+        let lines = vec![LyricLine {
+            time_ms: Some(1000),
+            end_time_ms: Some(20000),
+            text,
+            ..Default::default()
+        }];
+        let sentences = reconstruct_sentences(&lines);
+        let counts: Vec<usize> = sentences.iter().map(|s| s.word_count).collect();
+        assert_eq!(counts, [28, 28, 4]);
+    }
+
+    /// The lab's tail rule: a 1-2 word tail that follows a silence belongs to the sentence it
+    /// continues ("...appear" [2.1s] "upgrade."), not a card of its own.
+    #[test]
+    fn short_silence_tail_merges_back() {
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(5000),
+                text: "these things will appear".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(7100),
+                end_time_ms: Some(8000),
+                text: "upgrade.".into(),
+                ..Default::default()
+            },
+        ];
+        let sentences = reconstruct_sentences(&lines);
+        assert_eq!(sentences.len(), 1);
+        assert_eq!(sentences[0].text, "these things will appear upgrade.");
+        assert_eq!(sentences[0].word_count, 5);
+    }
+
+    /// A short fragment that starts a speaker turn stays apart instead of merging forward.
+    #[test]
+    fn short_fragment_after_a_marker_stays_a_turn() {
+        let lines = vec![
+            LyricLine {
+                time_ms: Some(1000),
+                end_time_ms: Some(3000),
+                text: "Hello there".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(3200),
+                end_time_ms: Some(4200),
+                text: ">> Yes.".into(),
+                ..Default::default()
+            },
+            LyricLine {
+                time_ms: Some(4400),
+                end_time_ms: Some(6400),
+                text: "I agree completely.".into(),
+                ..Default::default()
+            },
+        ];
+        let sentences = reconstruct_sentences(&lines);
+        let texts: Vec<&str> = sentences.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["Hello there", "Yes.", "I agree completely."]);
+    }
+
+    /// Cached lyrics from before v2 are re-cut on load (once), not served with stale cards.
+    #[test]
+    fn ensure_segmentation_rebuilds_an_old_cache_once() {
+        let mut l = Lyrics {
+            synced: true,
+            lines: vec![LyricLine::simple(
+                Some(1000),
+                "This is the first sentence. And this is the second sentence.".into(),
+            )],
+            sentences: Some(vec![LyricSentence {
+                id: 0,
+                text: "stale card".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert!(ensure_segmentation(&mut l));
+        assert_eq!(l.seg_version, SEGMENTATION_VERSION);
+        let texts: Vec<&str> = l.sentences.as_ref().unwrap().iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["This is the first sentence.", "And this is the second sentence."]);
+        // Current generation: no recompute, no cache write.
+        assert!(!ensure_segmentation(&mut l));
+    }
+
+    #[test]
+    fn ensure_segmentation_leaves_unsynced_lyrics_alone() {
+        let mut l = Lyrics {
+            lines: vec![LyricLine::simple(None, "one two".into())],
+            ..Default::default()
+        };
+        assert!(!ensure_segmentation(&mut l));
+        assert!(l.sentences.is_none());
+    }
+
+    /// Cross-check the v2 port against the Python lab (`docs/shadowing-lab`). Replays every
+    /// dumped caption JSON through `reconstruct_sentences` and prints the card stats the lab
+    /// compares (`prototype/lab.py stats`), so the two implementations can be held side by side:
+    ///
+    ///   SHADOWING_LAB_DIR=../docs/shadowing-lab/data \
+    ///     cargo test -p limusic-app --lib -- --ignored lab_stats --nocapture
+    ///
+    /// The corpus is a local checkout, not part of the crate, so this is ignored by default.
+    #[test]
+    #[ignore = "needs the docs/shadowing-lab corpus (SHADOWING_LAB_DIR)"]
+    fn lab_stats() {
+        use std::collections::BTreeSet;
+        use std::path::PathBuf;
+
+        let Some(root) = std::env::var_os("SHADOWING_LAB_DIR").map(PathBuf::from) else {
+            eprintln!("SHADOWING_LAB_DIR is not set");
+            return;
+        };
+        // The lab prefers `fetched/` over `appcache/` for the same video.
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut files: Vec<PathBuf> = Vec::new();
+        for folder in ["fetched", "appcache"] {
+            let Ok(entries) = std::fs::read_dir(root.join(folder)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "json").unwrap_or(false) {
+                    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                    if seen.insert(stem) {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+        files.sort();
+        // `SHADOWING_LAB_VIDEO=<stem>` dumps the cards for one video (to diff against Python);
+        // `SHADOWING_LAB_DUMP=1` dumps every card as TSV for a whole-corpus diff.
+        let only = std::env::var("SHADOWING_LAB_VIDEO").ok();
+        let dump = std::env::var("SHADOWING_LAB_DUMP").is_ok();
+        let (mut cards, mut frags, mut junk, mut max_words) = (0usize, 0usize, 0usize, 0usize);
+        for path in files {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let Some(lines) = doc
+                .get("lines")
+                .and_then(|v| serde_json::from_value::<Vec<LyricLine>>(v.clone()).ok())
+            else {
+                continue;
+            };
+            let sentences = reconstruct_sentences(&lines);
+            let file_frags = sentences.iter().filter(|s| s.word_count <= 2).count();
+            if only.as_deref() == Some(stem.as_str()) {
+                for s in &sentences {
+                    println!("  CARD {} {} {} | {}", s.start_ms, s.end_ms, s.word_count, s.text);
+                }
+            }
+            if dump {
+                for s in &sentences {
+                    println!("{}\t{}\t{}\t{}\t{}", stem, s.start_ms, s.end_ms, s.word_count, s.text);
+                }
+            }
+            let file_junk = sentences
+                .iter()
+                .filter(|s| s.skip_pause || clean_speech_dialogue(&s.text).is_empty())
+                .count();
+            let file_max = sentences.iter().map(|s| s.word_count).max().unwrap_or(0);
+            cards += sentences.len();
+            frags += file_frags;
+            junk += file_junk;
+            max_words = max_words.max(file_max);
+            println!(
+                "{:16} cards {:5}  frags {:4}  junk {:3}  max {:3}",
+                path.file_stem().unwrap_or_default().to_string_lossy(),
+                sentences.len(),
+                file_frags,
+                file_junk,
+                file_max
+            );
+        }
+        println!("TOTAL cards {cards}  frags<=2 {frags}  junk {junk}  max words {max_words}");
     }
 
     /// Are the external providers still alive? Hits them all for real, so it is NOT in the default
