@@ -415,7 +415,7 @@ if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
   echo "==> Re-signing…"
   rm -f "$APPIMAGE.sig"
-  if command -v tauri >/dev/null; then tauri signer sign "$APPIMAGE"; else cargo tauri signer sign "$APPIMAGE"; fi
+  if command -v tauri >/dev/null; then tauri signer sign "$APPIMAGE"; elif [ -x ./ui/node_modules/.bin/tauri ]; then ./ui/node_modules/.bin/tauri signer sign "$APPIMAGE"; else cargo tauri signer sign "$APPIMAGE"; fi
   [ "$APPIMAGE.sig" -nt "$APPIMAGE" ] || { echo "no fresh .sig next to $APPIMAGE after signing"; exit 1; }
   echo "==> Signed: $APPIMAGE.sig"
 else
