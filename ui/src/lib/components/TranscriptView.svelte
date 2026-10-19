@@ -190,6 +190,9 @@
 		if (ms == null) return;
 		api.seek(ms / 1000);
 		userScrolled = false;
+		if (!playback.paused) {
+			api.togglePause();
+		}
 	}
 
 	function handleUserScroll() {
@@ -200,10 +203,22 @@
 		}, 4000);
 	}
 
-	function handleWordClick(word: string, fullSentence: string, e: MouseEvent) {
+	function handleWordClick(word: string, fullSentence: string, e: MouseEvent, timeMs?: number | null) {
 		e.stopPropagation();
 		const clean = cleanWordToken(word);
 		if (!clean) return;
+
+		// 1. Auto-pause video when clicking on transcript word
+		if (!playback.paused) {
+			api.togglePause();
+		}
+
+		// 2. Align video position to the spoken line if requested
+		if (timeMs != null) {
+			api.seek(timeMs / 1000);
+			userScrolled = false;
+		}
+
 		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
 		if (e.ctrlKey || e.metaKey) {
 			selectedWord = null;
@@ -278,10 +293,17 @@
 				{#each transcript.lines as line, idx (idx)}
 					{@const isActive = idx === activeIndex}
 					{@const isPast = idx < activeIndex}
-					<button
+					<div
+						role="button"
+						tabindex="0"
 						data-index={idx}
-						type="button"
 						onclick={() => seekTo(line.time_ms)}
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								seekTo(line.time_ms);
+							}
+						}}
 						class="block w-full origin-left cursor-pointer text-left font-heading font-semibold leading-relaxed transition-all duration-200 ease-out py-2.5 px-3 rounded-2xl text-base md:text-lg hover:text-foreground hover:opacity-100 {isActive
 							? 'bg-primary/10 text-foreground font-bold opacity-100 shadow-sm border border-primary/20 scale-[1.01]'
 							: isPast
@@ -291,19 +313,23 @@
 						<span>
 							{#each line.text.split(' ') as word}
 								{@const clean = cleanWordToken(word)}
-								<!-- svelte-ignore a11y_click_events_have_key_events -->
-								<span
-									role="button"
-									tabindex="0"
-									onclick={(e) => handleWordClick(word, line.text, e)}
-									class="inline-block px-0.5 rounded hover:bg-primary/20 hover:text-primary transition-colors {vocab.getWordClass(clean)}"
-									title="Klik untuk arti kamus"
-								>
-									{word}{' '}
-								</span>
+								{#if clean}
+									<!-- svelte-ignore a11y_click_events_have_key_events -->
+									<span
+										role="button"
+										tabindex="0"
+										onclick={(e) => handleWordClick(word, line.text, e, line.time_ms)}
+										class="inline-block px-0.5 rounded hover:bg-primary/20 hover:text-primary transition-colors cursor-pointer {vocab.getWordClass(clean)}"
+										title="Klik untuk arti kamus"
+									>
+										{word}
+									</span>{' '}
+								{:else}
+									<span>{word} </span>
+								{/if}
 							{/each}
 						</span>
-					</button>
+					</div>
 				{/each}
 			</div>
 		{/if}

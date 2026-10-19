@@ -222,7 +222,10 @@
 	function handleWordClick(word: string, fullSentence: string, e: MouseEvent) {
 		e.stopPropagation();
 		const clean = cleanWordToken(word);
-		if (!clean || clean.length < 2) return;
+		if (!clean) return;
+		if (!playback.paused) {
+			api.togglePause();
+		}
 		const rect = (e.currentTarget as HTMLElement)?.getBoundingClientRect?.() ?? null;
 		selectedAiWord = null;
 		selectedWord = clean;

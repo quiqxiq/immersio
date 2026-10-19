@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { scale, fade } from 'svelte/transition';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
 		VolumeHighIcon,
@@ -17,6 +16,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { tts } from '$lib/tts.svelte';
+	import { toBody } from '$lib/menu';
 
 	let {
 		word,
@@ -174,8 +174,9 @@
 <!-- Transparent click-outside backdrop detector -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
-	class="fixed inset-0 z-40 bg-transparent"
+	class="fixed inset-0 z-[9998] bg-transparent"
 	onclick={onclose}
+	{@attach toBody}
 ></div>
 
 <!-- Dynamically Positioned Floating Immersion Popup Card -->
@@ -183,11 +184,11 @@
 <div
 	tabindex="-1"
 	style="position: fixed; z-index: 9999; {posStyle}"
-	class="overflow-hidden rounded-2xl border border-border/80 bg-card/95 p-4 shadow-2xl backdrop-blur-2xl transition-all flex flex-col focus:outline-none"
-	transition:scale={{ duration: 150, start: 0.95 }}
+	class="overflow-hidden rounded-2xl border border-border/80 bg-card/95 p-4 shadow-2xl backdrop-blur-2xl transition-all flex flex-col focus:outline-none animate-in fade-in-0 zoom-in-95 duration-150"
 	role="dialog"
 	aria-label="Kamus & Flashcard"
 	onclick={(e) => e.stopPropagation()}
+	{@attach toBody}
 >
 	<!-- Top Bar: Target Word, Lemma, IPA, Audio, Cambridge, Close -->
 	<div class="flex items-center justify-between gap-2 border-b border-border/50 pb-2.5 shrink-0">

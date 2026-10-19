@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import { scale, fade } from 'svelte/transition';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
 	import {
 		BookOpenTextIcon,
@@ -20,6 +19,7 @@
 	import { copyText } from '$lib/clipboard';
 	import { toast, ui } from '$lib/player.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import { toBody } from '$lib/menu';
 
 	let {
 		word,
@@ -292,8 +292,9 @@
 <!-- Backdrop click outside detector -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
-	class="fixed inset-0 z-40 bg-transparent"
+	class="fixed inset-0 z-[9998] bg-transparent"
 	onclick={onclose}
+	{@attach toBody}
 ></div>
 
 <!-- Floating AI Immersion Card -->
@@ -301,11 +302,11 @@
 <div
 	tabindex="-1"
 	style="position: fixed; z-index: 9999; {posStyle}"
-	class="overflow-hidden rounded-2xl border border-primary/30 bg-card/95 p-4 shadow-2xl backdrop-blur-2xl transition-all flex flex-col focus:outline-none"
-	transition:scale={{ duration: 150, start: 0.95 }}
+	class="overflow-hidden rounded-2xl border border-primary/30 bg-card/95 p-4 shadow-2xl backdrop-blur-2xl transition-all flex flex-col focus:outline-none animate-in fade-in-0 zoom-in-95 duration-150"
 	role="dialog"
 	aria-label="AI Immersion Tutor"
 	onclick={(e) => e.stopPropagation()}
+	{@attach toBody}
 >
 	<!-- Top Bar: Target Word + Lemma, 4 Icon-Only Tabs with Tooltips, Close Button -->
 	<div class="flex items-center justify-between gap-2 border-b border-border/50 pb-2.5 shrink-0">
