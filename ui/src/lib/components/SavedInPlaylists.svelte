@@ -174,22 +174,3 @@
 		{/if}
 	</div>
 {/if}
-
-<style>
-	/* The hand deals itself out as the card opens, front sleeve first. Three small layers inside one
-	   popup, once per open, so the transforms are cheap; the lift is the same three. */
-	.sleeve {
-		transform: translateX(var(--x)) rotate(var(--r));
-		transition: transform 160ms ease-out;
-		animation: deal 240ms cubic-bezier(0.2, 0.8, 0.2, 1) calc(var(--i) * 40ms) backwards;
-	}
-	.sleeve.lifted {
-		transform: translateX(var(--x)) translateY(-5px) rotate(0deg) scale(1.08);
-	}
-	@keyframes deal {
-		from {
-			transform: translateY(6px) scale(0.9);
-			opacity: 0;
-		}
-	}
-</style>
