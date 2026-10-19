@@ -22,6 +22,7 @@ import { appearance } from './theme.svelte';
 import { currentLocale, pushLocaleToRust, t } from './i18n.svelte';
 import { friendlyNetError } from './neterr';
 import { parseScrobbleConfig } from './scrobble';
+import { seekStep } from './shadow-pause';
 
 export const playback = $state({
 	now: null as NowPlaying | null,
@@ -65,7 +66,12 @@ export const shadowing = $state({
 	pauseTotalMs: 0,
 	lastPausedIndex: -1,
 	lastPausedSentenceId: -1,
-	isWaiting: false
+	isWaiting: false,
+	// The last shadowing seek (Next/Prev/Replay): `navAt` is `performance.now()` at the click,
+	// `navTargetMs` the position it seeks to. Until a position sample proves the seek landed, the
+	// samples still describe the sentence being left (see `shadow-pause.ts`).
+	navAt: 0,
+	navTargetMs: null as number | null
 });
 
 /**
@@ -1908,6 +1914,13 @@ export function initApp(mini = false): () => void {
 			};
 		}),
 		api.onPosition((p) => {
+			// A step past what one tick covers is a seek from somewhere other than the shadowing
+			// buttons (the player's slider): re-arm the engine for the sentence it landed in.
+			if (shadowing.active && seekStep(playback.position * 1000, p * 1000)) {
+				shadowing.isWaiting = false;
+				shadowing.lastPausedSentenceId = -1;
+				shadowing.navTargetMs = null;
+			}
 			playback.position = p;
 			playback.positionAt = performance.now();
 		}),

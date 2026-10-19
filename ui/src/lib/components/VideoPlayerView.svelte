@@ -19,6 +19,7 @@
 	import { np, playback, prefs, shadowing, ui, videoTranscript } from '$lib/player.svelte';
 	import { claimVideo, parkVideo, setHole, showVideo, video } from '$lib/video.svelte';
 	import { cleanWordToken } from '$lib/lemma';
+	import { navReleased, pausePoint } from '$lib/shadow-pause';
 	import { vocab } from '$lib/vocab.svelte';
 	import WordPopup from '$lib/components/WordPopup.svelte';
 	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
@@ -57,6 +58,13 @@
 		clearInterval(autoTimerInterval);
 		shadowing.pauseRemainingMs = 0;
 		shadowing.pauseTotalMs = 0;
+	}
+
+	/** Arm the auto-pause guard for a seek to `targetMs`: position samples from before it — or
+	 *  still short of it — describe the sentence being left and must not drive a pause. */
+	function armAutoPause(targetMs: number) {
+		shadowing.navAt = performance.now();
+		shadowing.navTargetMs = targetMs;
 	}
 
 	function toggleFullscreen() {
@@ -104,9 +112,11 @@
 		const sIdx = videoTranscript.activeSentenceIndex >= 0 ? videoTranscript.activeSentenceIndex : 0;
 		if (sentences && sentences.length > 0 && sIdx >= 0 && sIdx < sentences.length) {
 			const startMs = sentences[sIdx].start_ms;
-			api.seek(Math.max(0, startMs / 1000));
+			armAutoPause(startMs);
+			// Replay means this sentence may pause at its end again.
 			shadowing.lastPausedSentenceId = -1;
 			shadowing.isWaiting = false;
+			api.seek(Math.max(0, startMs / 1000));
 			if (playback.paused) {
 				api.togglePause();
 			}
@@ -117,9 +127,10 @@
 		const idx = videoTranscript.activeIndex >= 0 ? videoTranscript.activeIndex : 0;
 		if (lines && lines.length > 0 && idx >= 0 && idx < lines.length) {
 			const startMs = lines[idx].time_ms ?? 0;
-			api.seek(Math.max(0, startMs / 1000));
+			armAutoPause(startMs);
 			shadowing.lastPausedSentenceId = -1;
 			shadowing.isWaiting = false;
+			api.seek(Math.max(0, startMs / 1000));
 			if (playback.paused) {
 				api.togglePause();
 			}
@@ -133,9 +144,17 @@
 			const cur = videoTranscript.activeSentenceIndex >= 0 ? videoTranscript.activeSentenceIndex : 0;
 			const nextIdx = Math.max(0, Math.min(sentences.length - 1, cur + delta));
 			const startMs = sentences[nextIdx].start_ms;
-			api.seek(Math.max(0, startMs / 1000));
-			shadowing.lastPausedSentenceId = -1;
+			armAutoPause(startMs);
+			// The card moves at once; the ticks that follow confirm it.
+			videoTranscript.activeSentenceIndex = nextIdx;
+			// Leaving a paused sentence keeps its id: the tick already in flight describes *its*
+			// end, and with the id cleared it would pause there again (Next/Prev "stuck").
+			// A jump that clamps back onto the same card is a replay: it may pause again.
+			if (nextIdx === cur) {
+				shadowing.lastPausedSentenceId = -1;
+			}
 			shadowing.isWaiting = false;
+			api.seek(Math.max(0, startMs / 1000));
 			if (playback.paused) {
 				api.togglePause();
 			}
@@ -147,9 +166,13 @@
 		const cur = videoTranscript.activeIndex >= 0 ? videoTranscript.activeIndex : 0;
 		const nextIdx = Math.max(0, Math.min(lines.length - 1, cur + delta));
 		const startMs = lines[nextIdx].time_ms ?? 0;
-		api.seek(Math.max(0, startMs / 1000));
-		shadowing.lastPausedSentenceId = -1;
+		armAutoPause(startMs);
+		videoTranscript.activeIndex = nextIdx;
+		if (nextIdx === cur) {
+			shadowing.lastPausedSentenceId = -1;
+		}
 		shadowing.isWaiting = false;
+		api.seek(Math.max(0, startMs / 1000));
 		if (playback.paused) {
 			api.togglePause();
 		}
@@ -316,6 +339,15 @@
 		const sIdx = videoTranscript.activeSentenceIndex;
 		const posMs = playback.position * 1000;
 
+		// The seek's echo and the tick already in flight race each other; until the seek lands,
+		// the in-flight tick still describes the sentence the user just left (see shadow-pause.ts).
+		if (shadowing.navTargetMs !== null) {
+			if (!navReleased(shadowing.navAt, shadowing.navTargetMs, { posMs, atMs: playback.positionAt })) {
+				return;
+			}
+			shadowing.navTargetMs = null;
+		}
+
 		// 1. Primary: Use full reconstructed sentences
 		if (sentences && sentences.length > 0 && sIdx >= 0 && sIdx < sentences.length) {
 			const curSentence = sentences[sIdx];
@@ -326,42 +358,43 @@
 				return;
 			}
 
-			// Preemptive pause timing: stop 50-80ms before next cue or at sentence end
-			// so the video NEVER leaks the beginning of the next sentence!
-			const nextStartMs = (sIdx + 1 < sentences.length) ? sentences[sIdx + 1].start_ms : (curSentence.end_ms + 800);
-			const targetPauseMs = Math.min(curSentence.end_ms - 40, nextStartMs - 70);
+			const point = pausePoint({
+				posMs,
+				sentences,
+				activeIndex: sIdx,
+				paused: playback.paused,
+				isWaiting: shadowing.isWaiting,
+				lastPausedSentenceId: shadowing.lastPausedSentenceId
+			});
+			if (point) {
+				shadowing.lastPausedSentenceId = point.card.id;
+				shadowing.isWaiting = true;
+				api.togglePause();
 
-			if (posMs >= targetPauseMs && posMs <= nextStartMs + 500) {
-				if (!playback.paused && shadowing.lastPausedSentenceId !== curSentence.id) {
-					shadowing.lastPausedSentenceId = curSentence.id;
-					shadowing.isWaiting = true;
-					api.togglePause();
+				if (shadowing.pauseMode === 'timer') {
+					clearShadowTimer();
+					const totalPause = Math.round(
+						curSentence.suggested_pause_ms * (shadowing.paceMultiplier || 1.0)
+					);
+					shadowing.pauseTotalMs = totalPause;
+					shadowing.pauseRemainingMs = totalPause;
 
-					if (shadowing.pauseMode === 'timer') {
-						clearShadowTimer();
-						const totalPause = Math.round(
-							curSentence.suggested_pause_ms * (shadowing.paceMultiplier || 1.0)
-						);
-						shadowing.pauseTotalMs = totalPause;
-						shadowing.pauseRemainingMs = totalPause;
-
-						const startTick = Date.now();
-						autoTimerInterval = setInterval(() => {
-							const elapsed = Date.now() - startTick;
-							const remaining = Math.max(0, totalPause - elapsed);
-							shadowing.pauseRemainingMs = remaining;
-							if (remaining <= 0) {
-								clearInterval(autoTimerInterval);
-							}
-						}, 200);
-
-						autoTimerTimeout = setTimeout(() => {
+					const startTick = Date.now();
+					autoTimerInterval = setInterval(() => {
+						const elapsed = Date.now() - startTick;
+						const remaining = Math.max(0, totalPause - elapsed);
+						shadowing.pauseRemainingMs = remaining;
+						if (remaining <= 0) {
 							clearInterval(autoTimerInterval);
-							if (shadowing.isWaiting && playback.paused) {
-								resumeNext();
-							}
-						}, totalPause);
-					}
+						}
+					}, 200);
+
+					autoTimerTimeout = setTimeout(() => {
+						clearInterval(autoTimerInterval);
+						if (shadowing.isWaiting && playback.paused) {
+							resumeNext();
+						}
+					}, totalPause);
 				}
 			}
 			return;
