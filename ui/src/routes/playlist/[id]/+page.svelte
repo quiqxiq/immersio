@@ -1000,7 +1000,7 @@
 		     album page. -->
 		<div class="content-in min-h-0 flex-1 overflow-y-auto" {@attach sc.attach}>
 			<div class="relative flex min-h-[38vh] shrink-0 items-end gap-6 overflow-hidden border-b p-6">
-				<!-- The backdrop and its fade share one layer (`art-wash` on the wrapper): see HomeHero. -->
+				<!-- The backdrop and its fade share one layer (`art-wash` on the wrapper): see GreetingHero. -->
 				<div class="art-wash pointer-events-none absolute inset-0 overflow-hidden">
 					{#if backdrop}
 						<img

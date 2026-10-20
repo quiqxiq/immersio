@@ -302,7 +302,7 @@
 		<!-- relative: the queue and lyrics panels are absolute overlays inside it (see QueuePanel). -->
 		<div class="relative flex min-h-0 flex-1">
 			<Sidebar />
-			<!-- dragScroll: dragging a card up to home's Shortcuts grid has to be possible from anywhere in
+			<!-- dragScroll: dragging a card up to Musik's Shortcuts grid has to be possible from anywhere in
 			     the feed, so aiming at the top edge scrolls this container while the drag is in flight. -->
 			<main
 				class="min-w-0 flex-1 overflow-y-auto {video.hole ? 'invisible' : ''}"

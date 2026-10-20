@@ -306,7 +306,7 @@ const range = (n: number, prefix: string) => Array.from({ length: n }, (_, i) =>
 	ok(hydrate({ home: { order: [1, 'a'], hidden: 'nope' } }).home.order.join() === '@shortcuts,a,@familiar', 'junk is dropped');
 }
 
-// --- the rest of Edit home: new-section policy, look, reset --------------------------------------
+// --- the rest of Edit Music: new-section policy, look, reset --------------------------------------
 {
 	const p = empty();
 	ok(homeIsDefault(p), 'a fresh home is the default one');
@@ -415,7 +415,7 @@ const range = (n: number, prefix: string) => Array.from({ length: n }, (_, i) =>
 	ok(freshen(stale, bare).subtitle === '14 tracks', 'same for a row with no subtitle');
 }
 
-// --- every shelf home has ever shown, so Edit home isn't bounded by how far you scrolled --------
+// --- every shelf home has ever shown, so Edit Music isn't bounded by how far you scrolled --------
 {
 	const p = empty();
 	ok(noteSections(p, ['Quick picks', 'Listen again']), 'the first page is all new');

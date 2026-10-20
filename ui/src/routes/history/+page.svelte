@@ -63,7 +63,7 @@
 	const covers = $derived([...new Set(flat.slice(0, 40).flatMap((s) => (s.thumbnail ? [s.thumbnail] : [])))]);
 
 	// A rewritten thumbnail size Google's CDN doesn't serve 404s, and a decorative backdrop has to
-	// degrade to nothing rather than a broken-image glyph (same guard as HomeHero).
+	// degrade to nothing rather than a broken-image glyph (same guard as GreetingHero).
 	let artFailed = $state(false);
 	$effect(() => {
 		covers[0]; // re-arm when the artwork changes
@@ -122,10 +122,10 @@
 	{:else}
 		<!-- The same rounded band the Library ▸ Songs tab wears, tinted by the last thing played. -->
 		<div class="relative mb-6 overflow-hidden rounded-2xl border">
-			<!-- The wash and its fade share one layer (`art-wash` on the wrapper): see HomeHero. -->
+			<!-- The wash and its fade share one layer (`art-wash` on the wrapper): see GreetingHero. -->
 			<div class="art-wash pointer-events-none absolute inset-0 overflow-hidden">
 				{#if covers[0] && !artFailed}
-					<!-- 96px: blur-2xl throws away every detail bigger than a few pixels anyway (HomeHero). -->
+					<!-- 96px: blur-2xl throws away every detail bigger than a few pixels anyway (GreetingHero). -->
 					<img
 						src={thumb(covers[0], 96)}
 						alt=""

@@ -68,6 +68,7 @@
 	},
 	"nav": {
 		"home": "Beranda",
+		"music": "Musik",
 		"search": "Cari",
 		"library": "Koleksi",
 		"settings": "Pengaturan",
@@ -150,6 +151,21 @@
 		"edit_scrobble": "Edit scrobble",
 		"back_to": "Kembali ke {title}"
 	},
+	"music": {
+		"title": "Musik",
+		"subtitle": "Mix, daftar putar, dan pilihan untukmu",
+		"edit": "Edit Musik",
+		"edit_desc": "Atur rak di halaman Musik, sembunyikan yang tidak dipakai, dan pilih tampilannya.",
+		"all_hidden": "Semua konten di Musik dinonaktifkan.",
+		"feed_empty": "Umpan Musik Anda kosong kali ini.",
+		"signed_out_hint": "Masuk dan halaman Musik akan terisi dengan mix dan daftar putar berdasarkan apa yang Anda dengarkan.",
+		"show_section": "Tampilkan {title} di Musik",
+		"artwork_backdrop": "Gambar di balik header",
+		"artwork_backdrop_desc": "Beri warna header Musik dengan sampul yang sedang diputar.",
+		"sections_hint": "Seret bagian untuk memindahkannya, atau fokuskan pada tombol seret lalu gunakan tombol panah. Bagian yang disembunyikan tetap mempertahankan posisinya.",
+		"show_new": "Tampilkan bagian baru",
+		"show_new_desc": "YouTube menambahkan dan mengubah nama rak secara berkala. Jika dinonaktifkan, bagian baru akan disembunyikan sampai Anda mengaktifkannya."
+	},
 	"home": {
 		"good_morning": "Selamat pagi",
 		"good_afternoon": "Selamat siang",
@@ -188,7 +204,26 @@
 		"new_section": "Baru",
 		"show_new": "Tampilkan bagian baru",
 		"show_new_desc": "YouTube menambahkan dan mengubah nama rak secara berkala. Jika dinonaktifkan, bagian baru akan disembunyikan sampai Anda mengaktifkannya.",
-		"all_hidden": "Semua konten di beranda dinonaktifkan."
+		"all_hidden": "Semua konten di beranda dinonaktifkan.",
+		"quick_start": "Mulai dari sini",
+		"quick_music": "Musik",
+		"quick_music_desc": "Jelajahi mix dan daftar putar",
+		"quick_videos": "Videos",
+		"quick_videos_desc": "Tonton dengan subtitle dan shadowing",
+		"quick_shadowing": "Shadowing",
+		"quick_shadowing_desc": "Latih adegan baris demi baris",
+		"quick_articles": "Artikel",
+		"quick_articles_desc": "Baca dan tambah kosakata",
+		"learning": "Progres belajar",
+		"words_known": "Kata dikenal",
+		"words_learning": "Sedang dipelajari",
+		"flashcards": "Flashcard",
+		"learning_empty": "Tandai kata saat membaca atau menonton, dan progresmu muncul di sini.",
+		"learning_cta": "Baca artikel",
+		"shadowing_title": "Latihan shadowing",
+		"shadowing_empty": "Pilih adegan dan latih baris demi baris.",
+		"latest_articles": "Artikel terbaru",
+		"min_read": "{count} menit baca"
 	},
 	"artist": {
 		"subscribe": "Berlangganan",

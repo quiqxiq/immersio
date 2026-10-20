@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Edit home: a panel beside the page rather than a modal over it. Every change lands on home as
+	// Edit Music: a panel beside the page rather than a modal over it. Every change lands on home as
 	// it's made, so the page behind is the preview and Done only closes. That is also why there's no
 	// Cancel any more: nothing is pending to throw away, and Reset puts home back the way it ships.
 	//
@@ -186,9 +186,9 @@
 					<HugeiconsIcon icon={DashboardSquareEditIcon} class="h-5 w-5" />
 				</span>
 				<div class="min-w-0 flex-1">
-					<Dialog.Title class="font-heading text-base font-semibold">{t('home.edit_home')}</Dialog.Title>
+					<Dialog.Title class="font-heading text-base font-semibold">{t('music.edit')}</Dialog.Title>
 					<Dialog.Description class="text-xs leading-relaxed text-muted-foreground">
-						{t('home.edit_home_desc')}
+						{t('music.edit_desc')}
 					</Dialog.Description>
 				</div>
 				<Button
@@ -244,8 +244,8 @@
 						saveHome({ chips: on })
 					)}
 					{@render toggleRow(
-						t('home.artwork_backdrop'),
-						t('home.artwork_backdrop_desc'),
+						t('music.artwork_backdrop'),
+						t('music.artwork_backdrop_desc'),
 						personal.home.backdrop,
 						(on) => saveHome({ backdrop: on })
 					)}
@@ -349,15 +349,15 @@
 								size="sm"
 								checked={row.shown}
 								onCheckedChange={(on) => show(row, on)}
-								aria-label={t('home.show_section', { title: row.title })}
+								aria-label={t('music.show_section', { title: row.title })}
 							/>
 						</div>
 					{/each}
 				</div>
-				<p class="mt-2 px-1 text-xs leading-relaxed text-muted-foreground">{t('home.sections_hint')}</p>
+				<p class="mt-2 px-1 text-xs leading-relaxed text-muted-foreground">{t('music.sections_hint')}</p>
 
 				<div class="mt-4 overflow-hidden rounded-xl border bg-card">
-					{@render toggleRow(t('home.show_new'), t('home.show_new_desc'), !personal.home.hideNew, setShowNew)}
+					{@render toggleRow(t('music.show_new'), t('music.show_new_desc'), !personal.home.hideNew, setShowNew)}
 				</div>
 			</div>
 

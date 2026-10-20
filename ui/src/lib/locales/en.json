@@ -119,6 +119,7 @@
 	},
 	"nav": {
 		"home": "Home",
+		"music": "Music",
 		"search": "Search",
 		"library": "Library",
 		"settings": "Settings",
@@ -205,6 +206,21 @@
 		"pin_to_top": "Pin to top",
 		"unpin": "Unpin"
 	},
+	"music": {
+		"title": "Music",
+		"subtitle": "Mixes, playlists and picks for you",
+		"edit": "Edit Music",
+		"edit_desc": "Arrange the shelves on Music, hide what you don't use, and choose how it looks.",
+		"all_hidden": "Everything on Music is switched off.",
+		"feed_empty": "Your Music feed came back empty this time.",
+		"signed_out_hint": "Sign in and Music fills up with mixes and playlists built from what you listen to.",
+		"show_section": "Show {title} on Music",
+		"artwork_backdrop": "Artwork behind the header",
+		"artwork_backdrop_desc": "Tint the Music header with the cover of whatever is playing.",
+		"sections_hint": "Drag a section to move it, or focus its handle and use the arrow keys. Hidden sections keep their place.",
+		"show_new": "Show new sections",
+		"show_new_desc": "YouTube adds and renames shelves over time. Turned off, they arrive hidden and wait here until you switch them on."
+	},
 	"home": {
 		"good_morning": "Good morning",
 		"good_afternoon": "Good afternoon",
@@ -243,7 +259,26 @@
 		"new_section": "New",
 		"show_new": "Show new sections",
 		"show_new_desc": "YouTube adds and renames shelves over time. Turned off, they arrive hidden and wait here until you switch them on.",
-		"all_hidden": "Everything on home is switched off."
+		"all_hidden": "Everything on home is switched off.",
+		"quick_start": "Start here",
+		"quick_music": "Music",
+		"quick_music_desc": "Explore mixes and playlists",
+		"quick_videos": "Videos",
+		"quick_videos_desc": "Watch with subtitles and shadowing",
+		"quick_shadowing": "Shadowing",
+		"quick_shadowing_desc": "Rehearse a scene line by line",
+		"quick_articles": "Articles",
+		"quick_articles_desc": "Read and pick up new words",
+		"learning": "Learning progress",
+		"words_known": "Words known",
+		"words_learning": "Learning",
+		"flashcards": "Flashcards",
+		"learning_empty": "Mark words while you read or watch, and your progress lands here.",
+		"learning_cta": "Read an article",
+		"shadowing_title": "Shadowing practice",
+		"shadowing_empty": "Pick a scene and rehearse it line by line.",
+		"latest_articles": "Latest articles",
+		"min_read": "{count} min read"
 	},
 	"history": {
 		"title": "History",

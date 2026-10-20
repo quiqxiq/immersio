@@ -64,7 +64,7 @@
 		 * of unrelated suggestions: clicking one there plays that one and lets autoplay take over.
 		 */
 		queueAll?: boolean;
-		/** Card width, set in Edit home. Rows of songs and community cards keep their own. */
+		/** Card width, set in Edit Music. Rows of songs and community cards keep their own. */
 		size?: CardSize;
 	} = $props();
 

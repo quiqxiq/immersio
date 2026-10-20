@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The lyrics provider order (#23, #326): drag a source up to ask it sooner, switch it off to never
-	// ask it. Saved as it changes, like Edit Home. The order is Rust's (`lyrics_providers`); a
+	// ask it. Saved as it changes, like Edit Music. The order is Rust's (`lyrics_providers`); a
 	// reorder drops the cached lyrics it would have changed, sparing songs whose source was picked
 	// by hand.
 	import { tick } from 'svelte';
@@ -43,7 +43,7 @@
 		await reload();
 	}
 
-	/** Same live reorder as Edit Home: the row follows the pointer past the middle of its neighbour,
+	/** Same live reorder as Edit Music: the row follows the pointer past the middle of its neighbour,
 	 *  and the order is saved once, on dragend. */
 	function moveTo(to: number) {
 		if (dragging === null || dragging === to) return;
@@ -101,7 +101,7 @@
 		{#each rows as row, i (row.id)}
 			{@const kind = SOURCE_KIND[row.id] ?? 'synced'}
 			<!-- The whole row drags, the grip says where to grab it. No `animate:flip`, for the reason
-			     HomeLayoutDialog gives: a moving hit box makes the list ping-pong under the pointer. -->
+			     MusicLayoutDialog gives: a moving hit box makes the list ping-pong under the pointer. -->
 			<div
 				role="listitem"
 				draggable="true"

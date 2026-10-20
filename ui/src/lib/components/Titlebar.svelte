@@ -172,7 +172,7 @@
 		</button>
 		<!-- Third in the browser's own control group, and read as such without a label. It drops the
 		     browse cache and remounts the page, which is the only way to ask YouTube for a different
-		     home feed: refetching rotates roughly a third of "Quick picks" (#177). Never disabled,
+		     Music feed: refetching rotates roughly a third of "Quick picks" (#177). Never disabled,
 		     since the page it reloads is always there; the route's own skeletons are the progress. -->
 		<button
 			class="flex h-full w-9 items-center justify-center text-foreground/80 transition-colors hover:bg-accent/10 hover:text-foreground"
@@ -201,7 +201,7 @@
 			<HugeiconsIcon icon={Link04Icon} class="h-4 w-4" />
 		</button>
 
-		<!-- Opens the same modal as the home hero's button (one dialog, mounted in +layout). -->
+		<!-- Opens the same modal as the greeting hero's button (one dialog, mounted in +layout). -->
 		<button
 			class="flex h-full w-8 items-center justify-center text-muted-foreground transition-colors hover:bg-accent/10 hover:text-foreground {lt.role !==
 			'none'

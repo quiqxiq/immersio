@@ -239,7 +239,7 @@
 {:else if album}
     <!-- Header with the blurred album cover as a hero backdrop -->
     <div class="content-in relative overflow-hidden">
-        <!-- The wash and its fade share one layer (`art-wash` on the wrapper): see HomeHero. -->
+        <!-- The wash and its fade share one layer (`art-wash` on the wrapper): see GreetingHero. -->
         <div class="art-wash absolute inset-0 overflow-hidden">
             {#if album.thumbnail}
                 <!-- Blurred backdrop: blur-2xl destroys any detail a bigger source would carry, so

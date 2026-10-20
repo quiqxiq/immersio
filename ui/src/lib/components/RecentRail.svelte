@@ -24,7 +24,17 @@
 	import { t } from '$lib/i18n.svelte';
 	import ItemMenu from './ItemMenu.svelte';
 
-	let { items }: { items: BrowseItem[] } = $props();
+	let {
+		items,
+		draggable = true,
+		menu = true
+	}: {
+		items: BrowseItem[];
+		/** Beranda shows these as plain re-entry points: no drag into Musik's Shortcuts grid. */
+		draggable?: boolean;
+		/** …and no row menu either, so the dashboard stays a dashboard. */
+		menu?: boolean;
+	} = $props();
 
 	// Which row's fetch-then-play is in flight (playlists/albums have to be loaded before they can
 	// play). One at a time: a second click while the first resolves is a mis-click, not a request.
@@ -58,8 +68,8 @@
 				data-ctx
 				role="button"
 				tabindex="0"
-				draggable="true"
-				ondragstart={(e) => setDragItem(e, item)}
+				draggable={draggable}
+				ondragstart={draggable ? (e) => setDragItem(e, item) : undefined}
 				onclick={() => openItem(item)}
 				onkeydown={(e) => {
 					if (e.target !== e.currentTarget) return;
@@ -116,10 +126,12 @@
 						)}
 					</div>
 				</div>
-				<ItemMenu
-					{item}
-					triggerClass="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
-				/>
+				{#if menu}
+					<ItemMenu
+						{item}
+						triggerClass="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+					/>
+				{/if}
 				{#if !round}
 					<button
 						class="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground opacity-0 shadow-md transition-opacity hover:brightness-110 focus-visible:opacity-100 group-hover/row:opacity-100"

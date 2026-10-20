@@ -57,9 +57,9 @@
 
 <div class="relative isolate overflow-hidden rounded-2xl border bg-card" data-ctx>
 	<!-- Lit by its own artwork. 96px because blur-2xl throws away everything finer anyway (the same
-	     reasoning as HomeHero), and a failed size just leaves the plain card. -->
+	     reasoning as GreetingHero), and a failed size just leaves the plain card. -->
 	{#if item.thumbnail && washOk}
-		<!-- The wash and its fade share one layer (`art-wash` on the wrapper): see HomeHero. -->
+		<!-- The wash and its fade share one layer (`art-wash` on the wrapper): see GreetingHero. -->
 		<div class="art-wash pointer-events-none absolute inset-0 -z-10 overflow-hidden" aria-hidden="true">
 			<img
 				src={thumb(item.thumbnail, 96)}

@@ -62,10 +62,10 @@ export type Personal = {
 export type CardSize = 'small' | 'medium' | 'large';
 export const CARD_SIZES: CardSize[] = ['small', 'medium', 'large'];
 
-/** Everything Edit home sets. */
+/** Everything Edit Music sets. */
 export type HomeLayout = {
 	/**
-	 * Section keys, see `arrangeSections`. `seen` is every shelf home has ever shown, so Edit home
+	 * Section keys, see `arrangeSections`. `seen` is every shelf home has ever shown, so Edit Music
 	 * can list the ones the feed hasn't reached yet. It is the feed's, not the user's: Reset keeps it.
 	 */
 	order: string[];
@@ -455,7 +455,7 @@ export function orderLibrary(items: BrowseItem[], p: Personal): BrowseItem[] {
 // --- Home arrangement ---------------------------------------------------------------------------
 
 /**
- * Home's sections in the order the user put them, hidden ones included (the Edit home panel has to
+ * Home's sections in the order the user put them, hidden ones included (the Edit Music panel has to
  * list those to offer them back). A section YouTube only started sending after the last save has no
  * rank and sorts to the end, keeping the feed's own order among its peers.
  *
@@ -506,7 +506,7 @@ export function homeIsDefault(p: Personal): boolean {
 
 /**
  * Home arrives a page at a time, so at any moment the feed holds only the shelves the reader has
- * scrolled to. Edit home lists sections, and listing only the loaded ones meant the list showed
+ * scrolled to. Edit Music lists sections, and listing only the loaded ones meant the list showed
  * five entries before a scroll and fifteen after one. Remember every shelf title the feed has ever
  * rendered and the modal can offer all of them, whether or not this visit has fetched them yet.
  *

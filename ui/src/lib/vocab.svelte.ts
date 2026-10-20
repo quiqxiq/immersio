@@ -50,9 +50,13 @@ export function normalizeLemma(word: string): string {
 
 const DICT_CACHE = new Map<string, DictLookupResult>();
 
+/** A missing field from an older backend must not become `undefined` in the UI: the dashboard and
+ *  Immersion settings read these counts directly. */
+const ZERO_COUNTS: VocabCounts = { known: 0, learning: 0, ignored: 0, flashcards: 0 };
+
 class VocabStore {
 	statuses = $state<Record<string, string>>({});
-	counts = $state<VocabCounts>({ known: 0, learning: 0, ignored: 0, flashcards: 0 });
+	counts = $state<VocabCounts>({ ...ZERO_COUNTS });
 	anki = $state<AnkiStatus>({ connected: false, port: 8765 });
 	decks = $state<string[]>([]);
 	selectedDeck = $state<string>(localStorage.getItem('limusic_anki_deck') || 'English');
@@ -86,7 +90,7 @@ class VocabStore {
 				api.getDictCacheCount().catch(() => 0)
 			]);
 			this.statuses = s || {};
-			this.counts = c || { known: 0, learning: 0, ignored: 0, flashcards: 0 };
+			this.counts = { ...ZERO_COUNTS, ...(c || {}) };
 			this.dictCacheCount = cacheCount;
 			this.loaded = true;
 			this.checkAnki();
@@ -169,7 +173,7 @@ class VocabStore {
 			// Refresh statuses and counts
 			const [s, c] = await Promise.all([api.getWordStatuses('en'), api.getVocabCounts('en')]);
 			this.statuses = s || {};
-			this.counts = c || { known: 0, learning: 0, ignored: 0 };
+			this.counts = { ...ZERO_COUNTS, ...(c || {}) };
 			return count;
 		} catch (e) {
 			console.error('Failed bulkSetKnown:', e);
@@ -359,7 +363,7 @@ class VocabStore {
 				toast(`${count} kata dipromosikan menjadi 'Known' dari Anki!`);
 				const [s, c] = await Promise.all([api.getWordStatuses('en'), api.getVocabCounts('en')]);
 				this.statuses = s || {};
-				this.counts = c || { known: 0, learning: 0, ignored: 0 };
+				this.counts = { ...ZERO_COUNTS, ...(c || {}) };
 			} else {
 				toast('Semua kata sudah tersinkronisasi dengan Anki.');
 			}

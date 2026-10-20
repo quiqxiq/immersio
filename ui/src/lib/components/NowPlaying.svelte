@@ -630,7 +630,7 @@
 		{#if tabbed}{@render tabs()}{/if}
 	{:else}
 		<!-- === Original layout ===
-		     The artwork itself, blurred to a wash, is the background: same trick as HomeHero, and it
+		     The artwork itself, blurred to a wash, is the background: same trick as GreetingHero, and it
 		     needs no colour extraction (which a remote image would taint the canvas for anyway). The
 		     120px variant is the one the player bar has already loaded for this track, so this costs
 		     no request and nothing new to decode.

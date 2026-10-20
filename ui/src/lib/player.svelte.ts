@@ -615,7 +615,7 @@ export async function seedOnRepeatPick() {
 }
 
 /**
- * Edit home writes through this as you go: the page behind the panel is the preview. `order` is
+ * Edit Music writes through this as you go: the page behind the panel is the preview. `order` is
  * every section key the panel listed, in display order, hidden ones included, so a hidden section
  * that keeps its slot comes back where it was.
  */
@@ -631,7 +631,7 @@ export function resetHome() {
 	savePersonal();
 }
 
-/** Remember the shelves this page of the feed carried, for Edit home. See `pl.noteSections`. */
+/** Remember the shelves this page of the feed carried, for Edit Music. See `pl.noteSections`. */
 export function noteHomeSections(titles: string[]) {
 	if (pl.noteSections(personal, titles)) savePersonal();
 }

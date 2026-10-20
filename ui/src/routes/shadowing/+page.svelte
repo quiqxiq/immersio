@@ -28,7 +28,8 @@
 	import ShadowingLayoutDialog from '$lib/components/ShadowingLayoutDialog.svelte';
 	import * as api from '$lib/api';
 	import type { SongItem } from '$lib/api';
-	import { np, personal, playSong, shadowing, noteShadowingSections } from '$lib/player.svelte';
+	import { personal, noteShadowingSections } from '$lib/player.svelte';
+	import { startShadowingScene } from '$lib/shadowing';
 	import {
 		arrangeShadowingSections,
 		hiddenShadowingSections,
@@ -227,16 +228,8 @@
 		if (titles.length) noteShadowingSections(titles);
 	});
 
-	// Playback with full shadowing rehearsal setup
-	function playShadowingScene(v: SongItem) {
-		shadowing.active = true;
-		shadowing.lastPausedIndex = -1;
-		shadowing.isWaiting = false;
-
-		const item: SongItem = { ...v, is_video: true };
-		playSong(item);
-		np.open = true;
-	}
+	// Playback with full shadowing rehearsal setup lives in $lib/shadowing so Beranda can start a
+	// scene the same way.
 
 	// Fetch individual channel scenes with cache
 	async function loadChannelScenes(
@@ -556,8 +549,8 @@
 							<div
 								role="button"
 								tabindex="0"
-								onclick={() => playShadowingScene(v)}
-								onkeydown={(e) => e.key === 'Enter' && playShadowingScene(v)}
+								onclick={() => startShadowingScene(v)}
+								onkeydown={(e) => e.key === 'Enter' && startShadowingScene(v)}
 								class="group flex cursor-pointer flex-col gap-2 rounded-xl p-2 text-left transition-colors hover:bg-accent/10"
 							>
 								<!-- 16:9 Thumbnail -->
@@ -662,8 +655,8 @@
 							<div
 								role="button"
 								tabindex="0"
-								onclick={() => playShadowingScene(v)}
-								onkeydown={(e) => e.key === 'Enter' && playShadowingScene(v)}
+								onclick={() => startShadowingScene(v)}
+								onkeydown={(e) => e.key === 'Enter' && startShadowingScene(v)}
 								class="group flex cursor-pointer flex-col gap-2 rounded-xl p-2 text-left transition-colors hover:bg-accent/10"
 							>
 								<!-- 16:9 Thumbnail -->
@@ -736,7 +729,7 @@
 							items={block.items}
 							size={personal.shadowing.cards}
 							onMore={block.onMore}
-							onPlay={playShadowingScene}
+							onPlay={startShadowingScene}
 						/>
 					{/if}
 				{/each}

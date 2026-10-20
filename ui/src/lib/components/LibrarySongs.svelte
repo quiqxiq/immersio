@@ -100,7 +100,7 @@
 	]);
 
 	// A rewritten thumbnail size Google's CDN doesn't serve 404s, and a decorative backdrop has to
-	// degrade to nothing rather than a broken-image glyph (same guard as HomeHero).
+	// degrade to nothing rather than a broken-image glyph (same guard as GreetingHero).
 	let artFailed = $state(false);
 	$effect(() => {
 		covers[0]; // re-arm when the artwork changes
@@ -239,10 +239,10 @@
 	<!-- The header of the list rather than a page header: a rounded band the covers of your own
 	     library tint, so the tab has a face without pretending to be a playlist page. -->
 	<div class="relative mb-4 overflow-hidden rounded-2xl border">
-		<!-- The wash and its fade share one layer (`art-wash` on the wrapper): see HomeHero. -->
+		<!-- The wash and its fade share one layer (`art-wash` on the wrapper): see GreetingHero. -->
 		<div class="art-wash pointer-events-none absolute inset-0 overflow-hidden">
 			{#if covers[0] && !artFailed}
-				<!-- 96px: blur-2xl throws away every detail bigger than a few pixels anyway (HomeHero). -->
+				<!-- 96px: blur-2xl throws away every detail bigger than a few pixels anyway (GreetingHero). -->
 				<img
 					src={thumb(covers[0], 96)}
 					alt=""

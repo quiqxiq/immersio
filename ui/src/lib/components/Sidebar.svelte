@@ -34,6 +34,7 @@
 
 	const nav = $derived([
 		{ href: '/', label: t('nav.home'), icon: Home01Icon },
+		{ href: '/music', label: t('nav.music'), icon: MusicNote01Icon },
 		{ href: '/videos', label: 'Videos', icon: Video01Icon },
 		{ href: '/shadowing', label: 'Shadowing', icon: Film02Icon },
 		{ href: '/articles', label: 'Artikel', icon: News01Icon },

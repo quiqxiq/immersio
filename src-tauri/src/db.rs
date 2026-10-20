@@ -1325,10 +1325,10 @@ impl Db {
         Ok(count)
     }
 
-    /// Return count of known, learning, and ignored words.
+    /// Return count of known, learning, and ignored words, plus the flashcards mined so far.
     pub fn get_vocab_counts(&self, language: &str) -> Result<VocabCounts, rusqlite::Error> {
         let conn = self.0.lock().unwrap();
-        let mut counts = VocabCounts { known: 0, learning: 0, ignored: 0 };
+        let mut counts = VocabCounts { known: 0, learning: 0, ignored: 0, flashcards: 0 };
         let sql = "SELECT status, COUNT(*) FROM word_status WHERE language = ?1 GROUP BY status";
         if let Ok(mut stmt) = conn.prepare(sql) {
             if let Ok(rows) = stmt.query_map([language], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?))) {
@@ -1342,6 +1342,11 @@ impl Db {
                 }
             }
         }
+        // The flashcards table has no language column yet, so this is the total for the app. The
+        // UI has always declared `flashcards` on VocabCounts; it just never came back from Rust.
+        counts.flashcards = conn
+            .query_row("SELECT COUNT(*) FROM flashcards", [], |r| r.get(0))
+            .unwrap_or(0);
         Ok(counts)
     }
 
@@ -1523,6 +1528,7 @@ pub struct VocabCounts {
     pub known: usize,
     pub learning: usize,
     pub ignored: usize,
+    pub flashcards: usize,
 }
 
 /// A mined flashcard for language learning
