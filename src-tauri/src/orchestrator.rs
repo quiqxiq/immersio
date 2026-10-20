@@ -571,11 +571,15 @@ impl Orchestrator {
     /// in to confirm you're not a bot" for every video while WEB_REMIX kept resolving the audio of
     /// the same ids. VISIONOS is the fallback, and goes first for a track whose picture already
     /// failed ([`mark_video_failed`](Self::mark_video_failed)).
+    ///
+    /// `prefer_h264` is the caller's `Player::has_native_h264_decoder`: without a real H.264
+    /// decoder the picker has to stay away from the MP4 renditions (OpenH264 cannot seek them).
     pub async fn resolve_video(
         &self,
         video_id: &str,
         max_height: i32,
         disabled: &HashSet<String>,
+        prefer_h264: bool,
     ) -> Option<String> {
         let has_kept = self.video_replies.lock().is_ok_and(|m| m.contains_key(video_id));
         let failed =
@@ -595,9 +599,9 @@ impl Orchestrator {
                 continue;
             }
             let url = if key == MAIN_CLIENT {
-                self.web_remix_video(video_id, max_height).await
+                self.web_remix_video(video_id, max_height, prefer_h264).await
             } else {
-                self.direct_video(key, video_id, max_height).await
+                self.direct_video(key, video_id, max_height, prefer_h264).await
             };
             if let Some(url) = url {
                 tracing::debug!(video_id, client = key, "video: resolved");
@@ -627,7 +631,12 @@ impl Orchestrator {
     /// probe, because googlevideo caps some WEB_REMIX URLs at their first ~768 KiB
     /// (`validate_stream`). The probe sends no headers since neither proxy does, and googlevideo
     /// was measured to serve these URLs without a User-Agent or cookie.
-    async fn web_remix_video(&self, video_id: &str, max_height: i32) -> Option<String> {
+    async fn web_remix_video(
+        &self,
+        video_id: &str,
+        max_height: i32,
+        prefer_h264: bool,
+    ) -> Option<String> {
         let client = self.clients.get(MAIN_CLIENT)?;
         let visitor = self.it.visitor_data();
         let kept = self.video_replies.lock().ok().and_then(|mut m| m.remove(video_id));
@@ -649,7 +658,8 @@ impl Orchestrator {
                 resp.streaming_data?
             }
         };
-        let format = find_video_format(&sd, max_height)?;
+        let format = find_video_format(&sd, max_height, prefer_h264)?;
+        tracing::debug!(video_id, itag = format.itag, prefer_h264, "video: format picked");
         let url = self.find_url(format, video_id).await?;
         let url = self.sign(url, Some(client), video_id, visitor.as_deref()).await;
         if !self.validate_stream(&url, &HashMap::new(), content_length(format)).await {
@@ -663,7 +673,13 @@ impl Orchestrator {
     ///
     /// Not ANDROID_VR: its video URLs are capped at the first mebibyte like its audio ones (issue
     /// #292), so it could only ever hand the view a stream that dies mid-clip.
-    async fn direct_video(&self, key: &str, video_id: &str, max_height: i32) -> Option<String> {
+    async fn direct_video(
+        &self,
+        key: &str,
+        video_id: &str,
+        max_height: i32,
+        prefer_h264: bool,
+    ) -> Option<String> {
         let client = self.clients.get(key)?;
         let resp = match self.it.player(client, video_id, None, None, None).await {
             Ok(r) => r,
@@ -683,7 +699,15 @@ impl Orchestrator {
             return None;
         }
         let sd = resp.streaming_data.as_ref()?;
-        find_video_format(sd, max_height).and_then(|f| f.direct_url()).map(str::to_owned)
+        let format = find_video_format(sd, max_height, prefer_h264)?;
+        tracing::debug!(
+            video_id,
+            client = key,
+            itag = format.itag,
+            prefer_h264,
+            "video: format picked"
+        );
+        format.direct_url().map(str::to_owned)
     }
 
     /// `n`-transform, then `&pot=` for a PoToken client (context/05, 06). A step that fails leaves

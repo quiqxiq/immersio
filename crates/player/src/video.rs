@@ -2,7 +2,9 @@
 //!
 //! The picture is one more track of the audio file mpv is already playing (`video-add`), so picture
 //! and sound run off one clock: a seek, a pause or a tempo change moves both, and there is nothing
-//! to keep in step. mpv draws it one of two ways, and nothing here knows what it draws into:
+//! to keep in step. The one thing that needs care is picking the track up late — an external file
+//! starts at its own 0 — so [`realign_video`] lands it on the playing position when it is selected
+//! mid-track. mpv draws it one of two ways, and nothing here knows what it draws into:
 //!
 //! - through its render API into a GL surface the app owns (a GtkGLArea on Linux,
 //!   `src-tauri/src/nativevideo.rs`): the app hands in a GL loader and a wake-up, and calls
@@ -17,7 +19,9 @@
 use std::collections::VecDeque;
 use std::ffi::{c_void, CStr};
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::time::Duration;
 
 use libmpv2::render::{OpenGLInitParams, RenderContext, RenderParam, RenderParamApiType};
 
@@ -33,6 +37,21 @@ pub(crate) struct Videos {
     by_audio: VecDeque<(String, String)>,
     /// The file each deck has open, as of its last `FileLoaded`.
     loaded: [Option<String>; 2],
+    /// Counts the files a deck starts — by [`Player::load`], or by mpv advancing to the next
+    /// playlist entry on its own. An external video track does not survive its file (`loadfile`
+    /// takes the old entry's tracks with it), so this is what says whether a `video-add` still
+    /// counts.
+    load_seq: [u64; 2],
+    /// `(the `load_seq` it was added under, audio URL, video URL)` last handed to `video-add` for
+    /// each deck, if any. Both asynchronous entry points — the bounded attach a track start waits
+    /// on and the `FileLoaded` that follows it — want to add the same picture, and `video-add` of
+    /// one URL twice is a second external track in mpv, not a no-op (mpv 0.41). Cleared when an
+    /// add fails, so the retry can run.
+    attached: [Option<(u64, String, String)>; 2],
+    /// Set by [`Player::load`] when it hands a deck a new file: the `FileLoaded` that follows is
+    /// that same file starting, not another one, so it must not count a second time (its picture
+    /// is the attach the load's caller makes).
+    ours: [bool; 2],
 }
 
 impl Videos {
@@ -48,6 +67,40 @@ impl Videos {
     fn video_for(&self, deck: usize) -> Option<String> {
         let path = self.loaded[deck].as_deref()?;
         self.by_audio.iter().rev().find(|(a, _)| a == path).map(|(_, v)| v.clone())
+    }
+
+    /// [`Player::load`] is about to hand `deck` a new file: a new instance, whose external tracks
+    /// do not exist yet.
+    fn begin_load(&mut self, deck: usize) {
+        self.load_seq[deck] += 1;
+        self.ours[deck] = true;
+        self.attached[deck] = None;
+    }
+
+    /// A file started in `deck`; bumps the sequence unless it was the one `begin_load` announced.
+    fn begin_file(&mut self, deck: usize) {
+        if !std::mem::take(&mut self.ours[deck]) {
+            self.load_seq[deck] += 1;
+        }
+    }
+
+    /// Record `video` as handed to `video-add` for the file `deck` has open, or answer `false`
+    /// when that exact picture is already there for it.
+    fn claim_attach(&mut self, deck: usize, audio: &str, url: &str) -> bool {
+        let key = (self.load_seq[deck], audio.to_owned(), url.to_owned());
+        if self.attached[deck].as_ref() == Some(&key) {
+            return false;
+        }
+        self.attached[deck] = Some(key);
+        true
+    }
+
+    /// Take back [`Videos::claim_attach`] when the add failed, so a retry can run.
+    fn release_attach(&mut self, deck: usize, audio: &str, url: &str) {
+        let key = (self.load_seq[deck], audio.to_owned(), url.to_owned());
+        if self.attached[deck].as_ref() == Some(&key) {
+            self.attached[deck] = None;
+        }
     }
 }
 
@@ -69,38 +122,58 @@ impl Player {
             v.loaded[deck].as_deref() == Some(audio_url)
         };
         if now {
-            add_video(&self.decks, deck, audio_url.to_owned(), video_url.to_owned());
+            let _ = spawn_video_add(&self.decks, deck, audio_url.to_owned(), video_url.to_owned());
         }
     }
 
-    /// Attach the video track synchronously to the active deck before unpausing playback,
-    /// ensuring video and audio start in exact frame sync without initial desync or catch-up lag.
-    pub fn attach_video_sync(&self, audio_url: &str, video_url: &str) {
+    /// Attach `video_url` as the picture for `audio_url` and wait at most `wait` for mpv to have
+    /// the file open. `true` when it did.
+    ///
+    /// A track start calls this with the deck paused ([`Player::load_paused`]), so a picture that
+    /// lands inside `wait` is selected before the first sample and needs no alignment. One that
+    /// does not is left to its thread and realigned the moment it opens ([`open_video`]); the
+    /// caller plays on either way, so a slow or stalled upstream can no longer hold the start
+    /// (field: a proxy `HTTP 504` held it 20 s with `sync video-add failed … Raw(-12)`).
+    pub fn attach_video_wait(&self, audio_url: &str, video_url: &str, wait: Duration) -> bool {
         let deck = self.decks.active.load(Ordering::SeqCst);
-        let Some(mpv) = self.decks.mpv(deck).cloned() else { return };
         {
             let mut v = self.decks.videos.lock().unwrap();
             v.insert(audio_url, video_url);
             v.loaded[deck] = Some(audio_url.to_owned());
         }
-        if let Err(e) = mpv.command("video-add", &[&quoted(video_url), "auto"]) {
-            tracing::warn!(deck, error = %e, "video: sync video-add failed");
-            let _ = self.decks.tx.send(crate::PlayerEvent::VideoFailed(audio_url.to_owned()));
-            return;
-        }
-        let shown = self.decks.video_visible.load(Ordering::SeqCst)
-            && self.decks.active.load(Ordering::SeqCst) == deck;
-        let track = shown.then(|| newest_video_track(&mpv)).flatten();
-        let _ = match track {
-            Some(id) => mpv.set_property("vid", id),
-            None => mpv.set_property("vid", "no"),
+        let Some(rx) =
+            spawn_video_add(&self.decks, deck, audio_url.to_owned(), video_url.to_owned())
+        else {
+            // Already attached, or a thread is opening it for this same pair: nothing to wait for.
+            return true;
         };
-        tracing::debug!(deck, ?track, "video: attached synchronously before playback");
+        match rx.recv_timeout(wait) {
+            Ok(ok) => ok,
+            Err(_) => {
+                tracing::debug!(
+                    deck,
+                    wait_ms = wait.as_millis(),
+                    "video: still opening; playback starts without it"
+                );
+                false
+            }
+        }
     }
 
     /// The file mpv is playing, exactly as it was handed it.
     pub fn current_path(&self) -> Option<String> {
         self.mpv().get_property::<String>("path").ok()
+    }
+
+    /// The active deck is about to be handed a new file ([`Self::load`]).
+    ///
+    /// A `loadfile` takes the old entry's external tracks with it — the picture included — so
+    /// whatever the video bookkeeping thought was attached is gone, and a picture for the file
+    /// starting has to be added again even if the URL is the same one (a replay, or a retry on a
+    /// still-live link).
+    pub(crate) fn note_load(&self) {
+        let deck = self.decks.active.load(Ordering::SeqCst);
+        self.decks.videos.lock().unwrap().begin_load(deck);
     }
 
     /// Whether anyone can see the picture. Off, mpv decodes no video at all; back on, it picks the
@@ -179,7 +252,7 @@ impl Player {
 /// around it, so `force-window` follows `vid`: the output stays up, black, between two tracks and
 /// while the next one's video is still being added, instead of closing and letting the desktop
 /// show through. Off with the picture, which closes the output and frees what it held.
-pub(crate) fn apply_vid(decks: &Decks) {
+pub(crate) fn apply_vid(decks: &Arc<Decks>) {
     let _serial = decks.videos.lock().unwrap();
     let active = decks.active.load(Ordering::SeqCst);
     let on = decks.video_visible.load(Ordering::SeqCst);
@@ -192,7 +265,16 @@ pub(crate) fn apply_vid(decks: &Decks) {
             }
             if show {
                 if let Some(id) = newest_video_track(m) {
+                    // A `vid=no` deck that played on — the view was closed, or this is the
+                    // incoming deck of a crossfade — starts its picture at the external file's
+                    // own 0 when it is selected again, to be raced back to the clock: the
+                    // catch-up stutter. Realigning it costs one seek; it is a no-op when the
+                    // track was already selected.
+                    let fresh = selected_video_track(m) != Some(id);
                     let _ = m.set_property("vid", id);
+                    if fresh {
+                        realign_video(decks, deck, m);
+                    }
                 } else {
                     let _ = m.set_property("vid", "auto");
                 }
@@ -320,10 +402,11 @@ pub(crate) fn file_loaded(decks: &Arc<Decks>, deck: usize) {
         let video = {
             let mut v = decks.videos.lock().unwrap();
             v.loaded[deck] = path.clone();
+            v.begin_file(deck);
             (deck == decks.active.load(Ordering::SeqCst)).then(|| v.video_for(deck)).flatten()
         };
         if let (Some(audio), Some(url)) = (path, video) {
-            add_video(&decks, deck, audio, url);
+            let _ = spawn_video_add(&decks, deck, audio, url);
         }
     });
 }
@@ -337,12 +420,42 @@ pub(crate) fn deck_swapped(decks: &Arc<Decks>) {
         (v.loaded[deck].clone(), v.video_for(deck))
     };
     if let (Some(audio), Some(url)) = (audio, video) {
-        add_video(decks, deck, audio, url);
+        let _ = spawn_video_add(decks, deck, audio, url);
     }
 }
 
-/// `video-add`, off the calling thread: it returns only once mpv has opened the file, which is a
-/// network round trip (mpv opens it on a thread of its own, so playback never waits on it).
+/// [`Player::attach_video_wait`]'s worker: `video-add` on a thread of its own, because the
+/// command returns only once mpv has opened the file, which is a network round trip. The receiver
+/// reports whether the picture opened, so a caller can stop waiting on it. `None` when this exact
+/// pair is already attached (or still opening) for the deck — see [`Videos::attached`].
+fn spawn_video_add(
+    decks: &Arc<Decks>,
+    deck: usize,
+    audio: String,
+    url: String,
+) -> Option<Receiver<bool>> {
+    if !decks.videos.lock().unwrap().claim_attach(deck, &audio, &url) {
+        tracing::debug!(deck, "video: already attached for this file, not adding it twice");
+        return None;
+    }
+    let Some(mpv) = decks.mpv(deck).cloned() else {
+        decks.videos.lock().unwrap().release_attach(deck, &audio, &url);
+        return None;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let decks = decks.clone();
+    let _ = std::thread::Builder::new().name("mpv-video-add".into()).spawn(move || {
+        let ok = open_video(&decks, deck, &mpv, &audio, &url);
+        if !ok {
+            decks.videos.lock().unwrap().release_attach(deck, &audio, &url);
+        }
+        let _ = tx.send(ok);
+    });
+    Some(rx)
+}
+
+/// One `video-add`, and the selection and alignment that have to follow it. `true` when the file
+/// opened.
 ///
 /// Always added unselected, and selected afterwards by id if someone can see it by then. Choosing
 /// `select` or `auto` up front read the visibility before the round trip: the view asking for the
@@ -351,25 +464,98 @@ pub(crate) fn deck_swapped(decks: &Arc<Decks>) {
 /// change or an opened link, which only closing and reopening the view (`no` then `auto`) cleared.
 ///
 /// `audio` is the file the picture belongs to, which a failure names.
-fn add_video(decks: &Arc<Decks>, deck: usize, audio: String, url: String) {
-    let Some(mpv) = decks.mpv(deck).cloned() else { return };
-    let decks = decks.clone();
-    let _ = std::thread::Builder::new().name("mpv-video-add".into()).spawn(move || {
-        if let Err(e) = mpv.command("video-add", &[&quoted(&url), "auto"]) {
-            tracing::warn!(deck, error = %e, "video: mpv could not open the picture");
-            let _ = decks.tx.send(crate::PlayerEvent::VideoFailed(audio));
+fn open_video(
+    decks: &Arc<Decks>,
+    deck: usize,
+    mpv: &Arc<libmpv2::Mpv>,
+    audio: &str,
+    url: &str,
+) -> bool {
+    if let Err(e) = add_external_video(mpv, url) {
+        tracing::warn!(deck, error = %e, "video: mpv could not open the picture");
+        let _ = decks.tx.send(crate::PlayerEvent::VideoFailed(audio.to_owned()));
+        return false;
+    }
+    let _serial = decks.videos.lock().unwrap();
+    let shown = decks.video_visible.load(Ordering::SeqCst)
+        && decks.active.load(Ordering::SeqCst) == deck;
+    let track = shown.then(|| newest_video_track(mpv)).flatten();
+    let _ = match track {
+        Some(id) => mpv.set_property("vid", id),
+        None => mpv.set_property("vid", "no"),
+    };
+    if track.is_some() {
+        realign_video(decks, deck, mpv);
+    }
+    tracing::debug!(deck, ?track, "video: attached");
+    true
+}
+
+/// `video-add`, retried while mpv refuses it.
+///
+/// This runs in the same breath as the `loadfile` that starts the file it belongs to, and for the
+/// few milliseconds in which the entry being replaced is gone and the new one has not started, mpv
+/// has no current file to add an external track to and answers `MPV_ERROR_COMMAND` — the field's
+/// `Raw(-12)`, which read as a failed attach. A retry 20 ms later already succeeds (mpv 0.41), so
+/// wait out the replacement instead of losing the picture; the total is short enough to stay
+/// inside [`Player::attach_video_wait`]'s budget.
+fn add_external_video(mpv: &libmpv2::Mpv, url: &str) -> Result<(), Error> {
+    let mut delay = std::time::Duration::from_millis(20);
+    let mut last = None;
+    for attempt in 0..5 {
+        match mpv.command("video-add", &[&quoted(url), "auto"]) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        if attempt < 4 {
+            std::thread::sleep(delay);
+            delay *= 2;
+        }
+    }
+    Err(Error::Mpv(last.expect("the loop body runs at least once")))
+}
+
+/// Land a picture that was picked up after the audio clock had already started on the position
+/// the deck is at, instead of letting mpv read the external file from its own 0 and race it to
+/// the clock — the stutter a video switch is reported as, and after which a seek can arrive
+/// mid-GOP and fail in OpenH264.
+///
+/// Detached: a caller may be the event loop (`apply_vid` runs there on a deck swap), and a seek
+/// is mpv's work. A paused deck or one at the top needs none, so the mid-track attach and the
+/// crossfade hand-over are the only callers it has any effect for.
+fn realign_video(decks: &Arc<Decks>, deck: usize, mpv: &Arc<libmpv2::Mpv>) {
+    let (decks, mpv) = (decks.clone(), mpv.clone());
+    let _ = std::thread::Builder::new().name("mpv-video-align".into()).spawn(move || {
+        if decks.active.load(Ordering::SeqCst) != deck
+            || mpv.get_property::<bool>("pause").unwrap_or(true)
+        {
             return;
         }
-        let _serial = decks.videos.lock().unwrap();
-        let shown = decks.video_visible.load(Ordering::SeqCst)
-            && decks.active.load(Ordering::SeqCst) == deck;
-        let track = shown.then(|| newest_video_track(&mpv)).flatten();
-        let _ = match track {
-            Some(id) => mpv.set_property("vid", id),
-            None => mpv.set_property("vid", "no"),
-        };
-        tracing::debug!(deck, ?track, "video: attached");
+        let Ok(pos) = mpv.get_property::<f64>("time-pos") else { return };
+        if !pos.is_finite() || pos <= 1.0 {
+            return;
+        }
+        match mpv.command("seek", &[&pos.to_string(), "absolute+exact"]) {
+            Ok(()) => {
+                tracing::debug!(deck, pos, "video: aligned picture with the playing position")
+            }
+            Err(e) => tracing::debug!(deck, pos, error = %e, "video: align seek failed"),
+        }
     });
+}
+
+/// The id of the video track mpv currently has selected, if any.
+fn selected_video_track(mpv: &libmpv2::Mpv) -> Option<i64> {
+    let n = mpv.get_property::<i64>("track-list/count").ok()?;
+    (0..n).find_map(|i| {
+        if mpv.get_property::<String>(&format!("track-list/{i}/type")).ok()?.as_str() != "video" {
+            return None;
+        }
+        if !mpv.get_property::<bool>(&format!("track-list/{i}/selected")).unwrap_or(false) {
+            return None;
+        }
+        mpv.get_property::<i64>(&format!("track-list/{i}/id")).ok()
+    })
 }
 
 /// The id of the last video track in the file, which is the one `video-add` just appended.
@@ -466,6 +652,39 @@ mod tests {
         }
         assert_eq!(v.by_audio.len(), MAX_VIDEOS);
         assert_eq!(v.video_for(0), None, "evicted by newer tracks");
+    }
+
+    /// One `video-add` per file. Both entry points — the bounded attach a track start waits on and
+    /// the `FileLoaded` that follows it — want the same picture, and a replay of the same cached
+    /// URLs wants it again (the `loadfile` took the old entry's external tracks with it). mpv 0.41
+    /// answers a second `video-add` of one URL with a second track rather than a no-op, so getting
+    /// either of these wrong shows up as a doubled picture or no picture at all.
+    #[test]
+    fn a_picture_is_added_once_per_file_and_again_per_replay() {
+        let mut v = Videos::default();
+        // A track start: the load, the attach made while it is paused, then its own FileLoaded.
+        v.begin_load(0);
+        assert!(v.claim_attach(0, "a1", "v1"), "the start's attach adds the picture");
+        v.begin_file(0);
+        assert!(
+            !v.claim_attach(0, "a1", "v1"),
+            "the FileLoaded behind the start does not add the same picture twice"
+        );
+        // An add that failed is taken back, so its retry runs.
+        v.release_attach(0, "a1", "v1");
+        assert!(v.claim_attach(0, "a1", "v1"), "a retry after a failed add runs");
+
+        // The same track again, same cached URLs: a new file, so its picture is added again.
+        v.begin_load(0);
+        assert!(v.claim_attach(0, "a1", "v1"), "a replay adds its picture again");
+        v.begin_file(0);
+        assert!(!v.claim_attach(0, "a1", "v1"), "and its FileLoaded does not duplicate it");
+
+        // mpv advancing on its own: no `begin_load`, so its FileLoaded counts as a new file and the
+        // picture claimed for the previous one no longer applies.
+        v.begin_file(0);
+        assert!(v.claim_attach(0, "a2", "v2"), "the next entry gets its own picture");
+        assert!(v.claim_attach(0, "a2", "v2b"), "a re-resolved URL is a new picture");
     }
 
     /// bgr0 in, RGBA out, each output pixel the mean of its block, rows flipped to bottom-up, and

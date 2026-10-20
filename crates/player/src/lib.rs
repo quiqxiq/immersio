@@ -410,6 +410,32 @@ impl Player {
         gain_db: Option<f64>,
         start: Option<f64>,
     ) -> Result<(), Error> {
+        self.load_impl(url, headers, gain_db, start, false)
+    }
+
+    /// [`Self::load`] with the new file starting paused; the caller unpauses with [`Self::play`].
+    ///
+    /// A track start that opens a picture uses this so the video track can be selected before the
+    /// audio clock starts, which is what keeps the two in step ([`Self::attach_video_wait`]). If
+    /// that wait runs out the caller plays anyway; the picture attaches late and is realigned.
+    pub fn load_paused(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        gain_db: Option<f64>,
+        start: Option<f64>,
+    ) -> Result<(), Error> {
+        self.load_impl(url, headers, gain_db, start, true)
+    }
+
+    fn load_impl(
+        &self,
+        url: &str,
+        headers: &HashMap<String, String>,
+        gain_db: Option<f64>,
+        start: Option<f64>,
+        start_paused: bool,
+    ) -> Result<(), Error> {
         // Whatever was queued up on the other deck is not what the user asked for. Cut a fade
         // in progress too: a skip during the last seconds of a track should not leave the old one
         // still fading under the new one.
@@ -432,10 +458,19 @@ impl Player {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+        if start_paused {
+            // Before `loadfile`: a new file starts playing the instant it is loaded, and the
+            // window between that and the caller's attach would let audio run ahead of a picture
+            // that is still opening — the desync this exists to avoid.
+            self.mpv().set_property("pause", true)?;
+        }
         self.apply_headers(headers)?;
         self.set_gain(gain_db)?;
         // Reset any existing video playback on load so an old video frame never lingers
         let _ = self.mpv().set_property("vid", "no");
+        // ...and tell the video bookkeeping: this deck's external tracks (the picture) die with
+        // the entry that is being replaced, so a picture for the new file is added afresh.
+        self.note_load();
         let args = loadfile_args(url, start, loadfile_has_index(self.mpv()));
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.mpv().command("loadfile", &refs)?;
@@ -597,6 +632,35 @@ impl Player {
         tracing::info!(to = position_secs, cached_to, past_cache_end, "seek");
         self.mpv().command("seek", &[&position_secs.to_string(), "absolute"])?;
         Ok(())
+    }
+
+    /// Whether mpv's ffmpeg carries a real H.264 decoder — the native one (`h264`) or a hardware
+    /// one (`h264_vaapi`, `h264_nvdec`, ...) — rather than only libopenh264. Stock Fedora's
+    /// ffmpeg-free has no other H.264 decoder, and OpenH264 is not one to trust with music videos:
+    /// it is constrained-baseline, and the seek failures seen in the field were its own
+    /// (`DecodeFrame failed`, `pSps->iNumRefFrames`). The video picker reads this to choose
+    /// between YouTube's MP4 renditions (itags 135/136/137) and VP9.
+    pub fn has_native_h264_decoder(&self) -> bool {
+        let Ok(list) = self.mpv().get_property::<MpvNode>("decoder-list") else {
+            // No such property (mpv before it existed): the bundled Windows/macOS players and the
+            // distro packages of that era all carry a full ffmpeg, so H.264 stays preferred.
+            return true;
+        };
+        list.array().is_some_and(|mut decoders| {
+            decoders.any(|d| {
+                d.map().is_some_and(|fields| {
+                    let (mut h264, mut native) = (false, false);
+                    for (key, value) in fields {
+                        match (key.as_str(), value.str()) {
+                            ("codec", Some("h264")) => h264 = true,
+                            ("driver", Some(name)) if name.starts_with("h264") => native = true,
+                            _ => {}
+                        }
+                    }
+                    h264 && native
+                })
+            })
+        })
     }
 
     /// Set output volume (0–100). The slider percent is perceptual, not mpv's raw scale:

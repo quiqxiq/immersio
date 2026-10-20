@@ -41,6 +41,7 @@
 	import AiWordPopup from '$lib/components/AiWordPopup.svelte';
 	import { vocab } from '$lib/vocab.svelte';
 	import { cleanWordToken } from '$lib/lemma';
+	import { lineClock, nextCue, onCue, onTick } from '$lib/lyrics-clock';
 
 	// `expanded` only sizes the type and centres the column. The owner of the extra room (the side
 	// panel, or the now-playing view) decides how much there is. Toggling it must not remount this
@@ -246,7 +247,39 @@
 		return () => cancelAnimationFrame(frameId);
 	});
 
-	const posMs = $derived(interpolatedPosSecs * 1000 - offsetMs);
+	/** Line-level lyrics get no frame clock (above), but waiting for the tick is what makes them
+	 *  look late: the tick is up to 150 ms behind and lands on a 50 ms step, so a cue can sit that
+	 *  long plus its fade before the line lights up. One timer per line instead — fire exactly on
+	 *  the cue, hold the line while the reported position catches up, and let a seek or a new set
+	 *  of lyrics take the floor away (`lyrics-clock.ts`). The word path keeps its frame clock. */
+	const cues = $derived(
+		(lyrics?.lines ?? [])
+			.map((l) => l.time_ms)
+			.filter((t): t is number => t !== undefined)
+	);
+	let clock = lineClock();
+	let cueFloorMs = $state(0);
+	let floorFor: typeof lyrics = null;
+
+	$effect(() => {
+		// A different track or a different lyrics source: neither the floor nor the cue that lit
+		// it means anything here.
+		if (floorFor !== lyrics) {
+			floorFor = lyrics;
+			clock = lineClock();
+			cueFloorMs = 0;
+		}
+		const pos = playback.position;
+		const ms = pos * 1000 - offsetMs;
+		cueFloorMs = onTick(clock, ms);
+		if (playback.paused || needsFrameClock || !lyrics?.synced) return;
+		const cue = nextCue(cues, ms);
+		if (cue === null) return;
+		const id = setTimeout(() => (cueFloorMs = onCue(clock, cue)), Math.max(0, cue - ms));
+		return () => clearTimeout(id);
+	});
+
+	const posMs = $derived(Math.max(interpolatedPosSecs * 1000 - offsetMs, cueFloorMs));
 
 	function getWordProgress(word: api.LyricWord, currentMs: number): number {
 		if (currentMs <= word.start_ms) return 0;
@@ -295,7 +328,7 @@
 				<button
 					data-line={i}
 					onclick={() => seekTo(line)}
-					class="block w-full origin-left cursor-pointer text-left font-heading font-bold leading-snug transition-[color,opacity,transform] duration-300 ease-out hover:text-foreground hover:opacity-100
+					class="block w-full origin-left cursor-pointer text-left font-heading font-bold leading-snug transition-[color,opacity,transform] duration-100 ease-out hover:text-foreground hover:opacity-100
 						{expanded ? 'py-3 text-3xl' : compact ? 'py-1 text-sm' : 'py-2 text-xl'}
 						{isActive
 						? 'scale-[1.04] text-foreground'

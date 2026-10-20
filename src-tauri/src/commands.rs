@@ -331,11 +331,6 @@ pub async fn set_transcript_settings(
 }
 
 #[tauri::command]
-pub async fn get_openrouter_token(state: St<'_>) -> Result<Option<String>, String> {
-    Ok(state.db.get_setting("openrouter_token"))
-}
-
-#[tauri::command]
 pub async fn set_openrouter_token(state: St<'_>, token: String) -> Result<(), String> {
     state.db.set_setting("openrouter_token", token.trim());
     Ok(())
@@ -611,7 +606,16 @@ pub async fn video_stream(
     }
     // The webview picks the height from its own box, so clamp it here rather than trusting it.
     let max_height = max_height.clamp(144, 1080);
-    match state.orchestrator.resolve_video(&video_id, max_height, &state.disabled_clients()).await {
+    match state
+        .orchestrator
+        .resolve_video(
+            &video_id,
+            max_height,
+            &state.disabled_clients(),
+            state.player.has_native_h264_decoder(),
+        )
+        .await
+    {
         Some(url) => {
             state.put_video_url(&video_id, url);
             Ok(crate::videoproxy::url_for(&video_id))

@@ -73,6 +73,8 @@ the drag cost 60 of 150 frames at 4x CPU on Chromium, the single preview none
 
 **A `requestAnimationFrame` loop runs only while its output is on screen and changing.** Gate it the
 way `LyricsView.svelte` gates the karaoke clock (`needsFrameClock`), so the app reaches idle frames.
+Line-level lyrics need no loop at all: one timer for the next cue lights the line on the cue rather
+than on the next position tick (`lyrics-clock.ts`), and nothing wakes a frame in between.
 
 **Layout is read on demand, never at mount.** Reading `scrollWidth`, `clientWidth`,
 `getBoundingClientRect()` and friends right after content is inserted forces the engine to lay out

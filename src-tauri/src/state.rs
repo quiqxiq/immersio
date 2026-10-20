@@ -36,6 +36,12 @@ pub const ON_REPEAT_LIMIT: usize = 20;
 /// Repeat, the playlist commands intercept it and answer from SQLite, and YouTube never sees one.
 pub const LOCAL_PLAYLIST_PREFIX: &str = "LOCALPLAYLIST:";
 
+/// How long a track start holds the audio for its music-video picture to open. The open is a proxy
+/// round trip (probe + first chunk), a few hundred ms in practice; past this the audio plays and
+/// the picture attaches in the background, realigned by the player when it lands. Unbounded, this
+/// wait was 20 s in the field when the video proxy answered `HTTP 504`.
+const VIDEO_ATTACH_WAIT: std::time::Duration = std::time::Duration::from_millis(1200);
+
 pub fn is_local_playlist(id: &str) -> bool {
     id.starts_with(LOCAL_PLAYLIST_PREFIX)
 }
@@ -533,7 +539,11 @@ impl AppState {
                     // ponytail: 720p, the ceiling the <video> path settled on for the player view.
                     // mpv scales whatever it gets; raise it if theater mode ever shows the video.
                     let disabled = st.disabled_clients();
-                    let Some(u) = st.orchestrator.resolve_video(&id, 720, &disabled).await else {
+                    let Some(u) = st
+                        .orchestrator
+                        .resolve_video(&id, 720, &disabled, st.player.has_native_h264_decoder())
+                        .await
+                    else {
                         return;
                     };
                     st.put_video_url(&id, u.clone());
@@ -2202,7 +2212,11 @@ impl AppState {
                 Some(u) => Some(u),
                 None => {
                     let disabled = self.disabled_clients();
-                    if let Some(u) = self.orchestrator.resolve_video(id, 720, &disabled).await {
+                    if let Some(u) = self
+                        .orchestrator
+                        .resolve_video(id, 720, &disabled, self.player.has_native_h264_decoder())
+                        .await
+                    {
                         self.put_video_url(id, u.clone());
                         Some(u)
                     } else {
@@ -2215,20 +2229,38 @@ impl AppState {
             }
         }
 
-        if let Err(e) =
-            self.player.load(&stream_url, &data.headers, self.track_gain(data.loudness_db), seek)
-        {
-            self.emit_error(&item.video_id, &e.to_string());
+        // A track with a picture loads paused so the picture can be selected before the first
+        // sample; `play` further down starts both. `load` alone would have the audio running
+        // against an attach that is still on the network (the desync and the catch-up stutter).
+        // The error is stringified right here: `player::Error` is not `Send`, and merely holding
+        // one until the awaits below keeps this whole future off the async runtime's threads.
+        let load_error = if pre_resolved_video_url.is_some() {
+            self.player.load_paused(
+                &stream_url,
+                &data.headers,
+                self.track_gain(data.loudness_db),
+                seek,
+            )
+        } else {
+            self.player
+                .load(&stream_url, &data.headers, self.track_gain(data.loudness_db), seek)
+        }
+        .err()
+        .map(|e| e.to_string());
+        if let Some(message) = load_error {
+            self.emit_error(&item.video_id, &message);
             return false;
         }
 
-        // Synchronously attach video track immediately after load (while mpv is paused)
-        // so that video and audio start together at exact 0.0s / seek position without desync lag.
+        // Open the picture before playback where that is quick, and bound the wait: this is a
+        // network round trip, and a stalled proxy used to hold the whole start behind it (20 s
+        // observed on `HTTP 504`). If the wait runs out the attach finishes on its own thread and
+        // the player realigns the picture with the playing position once it lands.
         // Route through audioproxy's bounded chunked loopback to prevent YouTube from throttling the video to 32 KB/s.
         if let Some(ref v_url) = pre_resolved_video_url {
             let proxied_v_url = crate::audioproxy::register(v_url, &HashMap::new())
                 .unwrap_or_else(|| v_url.clone());
-            self.player.attach_video_sync(&stream_url, &proxied_v_url);
+            self.player.attach_video_wait(&stream_url, &proxied_v_url, VIDEO_ATTACH_WAIT);
             let _ = self.app.emit("video-ready", &item.video_id);
         }
 

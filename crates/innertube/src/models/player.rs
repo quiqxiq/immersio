@@ -408,58 +408,48 @@ pub fn find_format(data: &StreamingData, quality: AudioQuality) -> Option<&Forma
     }
 }
 
-/// Best VP9 video-only format at or below `max_height`, for the player view's music-video mode.
+/// Best video-only format at or below `max_height`, for the player view's music-video mode.
 ///
-/// Video-only: the audio still comes from mpv, which is playing the same videoId. VP9 rather than
-/// MP4 because a stock Fedora only ships openh264 (constrained baseline) and YouTube's 720p/1080p
-/// MP4 is High profile, so itag 137 would fail for those users. context/03.
-pub fn find_video_format(data: &StreamingData, max_height: i32) -> Option<&Format> {
-    // 1. Prefer H.264 (avc1) for maximum hardware acceleration compatibility (e.g. VAAPI on AMD/Intel/Nvidia).
-    let h264 = data.adaptive_formats
-        .iter()
-        .filter(|f| {
-            !f.is_audio()
-                && (f.mime_type.contains("avc1") || f.mime_type.contains("h264"))
-                && f.height.is_some_and(|h| h <= max_height)
-        })
-        .max_by(|a, b| {
-            a.height
-                .cmp(&b.height)
-                .then(a.fps.unwrap_or(30).cmp(&b.fps.unwrap_or(30)))
-                .then(a.bitrate.cmp(&b.bitrate))
-        });
-    if h264.is_some() {
-        return h264;
-    }
-
-    // 2. Fallback to VP9
-    let vp9 = data.adaptive_formats
-        .iter()
-        .filter(|f| {
-            !f.is_audio()
-                && f.mime_type.contains("vp9")
-                && f.height.is_some_and(|h| h <= max_height)
-        })
-        .max_by(|a, b| {
-            a.height
-                .cmp(&b.height)
-                .then(a.fps.unwrap_or(30).cmp(&b.fps.unwrap_or(30)))
-                .then(a.bitrate.cmp(&b.bitrate))
-        });
-    if vp9.is_some() {
-        return vp9;
-    }
-
-    // 3. Fallback: any video format at or below max_height (e.g. AV1)
-    data.adaptive_formats
-        .iter()
-        .filter(|f| !f.is_audio() && f.height.is_some_and(|h| h <= max_height))
-        .max_by(|a, b| {
-            a.height
-                .cmp(&b.height)
-                .then(a.fps.unwrap_or(30).cmp(&b.fps.unwrap_or(30)))
-                .then(a.bitrate.cmp(&b.bitrate))
-        })
+/// Video-only: the audio still comes from mpv, which is playing the same videoId. `prefer_h264`
+/// sets the order: true (the app has a real H.264 decoder — a full ffmpeg, native or hardware)
+/// takes the H.264 rendition first for its hwaccel; false (only libopenh264, as on stock Fedora
+/// with ffmpeg-free) takes VP9 first and leaves H.264 as the fallback. OpenH264 is no decoder for
+/// this job: the 720p/1080p MP4 renditions are Main/High profile, and on them it fails after a
+/// seek (`DecodeFrame failed: PrefetchPic ERROR, pSps->iNumRefFrames`), which the view shows as a
+/// frozen or desynced picture. context/03.
+pub fn find_video_format(
+    data: &StreamingData,
+    max_height: i32,
+    prefer_h264: bool,
+) -> Option<&Format> {
+    let pick = |matches: fn(&str) -> bool| {
+        data.adaptive_formats
+            .iter()
+            .filter(|f| {
+                !f.is_audio() && matches(&f.mime_type) && f.height.is_some_and(|h| h <= max_height)
+            })
+            .max_by(|a, b| {
+                a.height
+                    .cmp(&b.height)
+                    .then(a.fps.unwrap_or(30).cmp(&b.fps.unwrap_or(30)))
+                    .then(a.bitrate.cmp(&b.bitrate))
+            })
+    };
+    let h264: fn(&str) -> bool = |m| m.contains("avc1") || m.contains("h264");
+    let vp9: fn(&str) -> bool = |m| m.contains("vp9");
+    let (first, second) = if prefer_h264 { (h264, vp9) } else { (vp9, h264) };
+    pick(first).or_else(|| pick(second)).or_else(|| {
+        // Fallback: any video at or below max_height (e.g. AV1).
+        data.adaptive_formats
+            .iter()
+            .filter(|f| !f.is_audio() && f.height.is_some_and(|h| h <= max_height))
+            .max_by(|a, b| {
+                a.height
+                    .cmp(&b.height)
+                    .then(a.fps.unwrap_or(30).cmp(&b.fps.unwrap_or(30)))
+                    .then(a.bitrate.cmp(&b.bitrate))
+            })
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -569,11 +559,12 @@ mod tests {
         assert_eq!(find_format(&sd, AudioQuality::Low).unwrap().itag, 15);
     }
 
-    /// Video-only picker (plan 031): VP9 only, capped by height, 60fps preferred over the 30fps
-    /// twin (plan 032: decode was never the bottleneck). AV1 and MP4 are deliberately not
-    /// fallbacks; see `find_video_format`.
+    /// Video-only picker: capped by height, 60fps preferred over the 30fps twin (plan 032:
+    /// decode was never the bottleneck), and the codec ordered by what the app's mpv can decode
+    /// — H.264 first where it has a real decoder, VP9 first where it has only OpenH264. The
+    /// any-video fallback is what picks AV1 last; see `find_video_format`.
     #[test]
-    fn find_video_format_picks_capped_vp9() {
+    fn find_video_format_orders_codecs_by_decoder() {
         let json = r#"{
             "playabilityStatus": { "status": "OK" },
             "streamingData": { "adaptiveFormats": [
@@ -588,9 +579,14 @@ mod tests {
             ] }
         }"#;
         let sd = serde_json::from_str::<PlayerResponse>(json).unwrap().streaming_data.unwrap();
-        assert_eq!(find_video_format(&sd, 720).unwrap().itag, 302); // 720p60 over the 720p24
-        assert_eq!(find_video_format(&sd, 480).unwrap().itag, 244);
-        assert_eq!(find_video_format(&sd, 2160).unwrap().itag, 137); // H.264 1080p
+        // H.264 preferred: nothing H.264 at or below 720, so VP9 there; 1080 takes the H.264.
+        assert_eq!(find_video_format(&sd, 720, true).unwrap().itag, 302); // 720p60 over the 720p24
+        assert_eq!(find_video_format(&sd, 480, true).unwrap().itag, 244);
+        assert_eq!(find_video_format(&sd, 2160, true).unwrap().itag, 137);
+        // Only OpenH264: VP9 wins at every height, including 1080 over the H.264.
+        assert_eq!(find_video_format(&sd, 720, false).unwrap().itag, 302);
+        assert_eq!(find_video_format(&sd, 480, false).unwrap().itag, 244);
+        assert_eq!(find_video_format(&sd, 2160, false).unwrap().itag, 248);
     }
 
     /// A real WEB_REMIX `/player` reply for an OMV (dQw4w9WgXcQ, 2026-09-30, signed in; trimmed to
@@ -605,10 +601,13 @@ mod tests {
         assert!(r.playability_status.is_ok());
         assert_eq!(r.video_details.as_ref().and_then(|v| v.is_music_video()), Some(true));
         let sd = r.streaming_data.unwrap();
-        let v = find_video_format(&sd, 720).unwrap();
+        let v = find_video_format(&sd, 720, true).unwrap();
         assert_eq!(v.itag, 136); // the 720p H.264
         assert!(v.direct_url().is_none() && v.cipher_string().is_some());
-        assert_eq!(find_video_format(&sd, 480).unwrap().itag, 135);
+        assert_eq!(find_video_format(&sd, 480, true).unwrap().itag, 135);
+        // No real H.264 decoder: the same reply offers the VP9 twins instead.
+        assert_eq!(find_video_format(&sd, 720, false).unwrap().itag, 247);
+        assert_eq!(find_video_format(&sd, 480, false).unwrap().itag, 244);
         assert!(find_format(&sd, AudioQuality::High).unwrap().is_audio());
     }
 
@@ -622,7 +621,8 @@ mod tests {
             ] }
         }"#;
         let sd = serde_json::from_str::<PlayerResponse>(json).unwrap().streaming_data.unwrap();
-        assert!(find_video_format(&sd, 720).is_none());
+        assert!(find_video_format(&sd, 720, true).is_none());
+        assert!(find_video_format(&sd, 720, false).is_none());
     }
 
     /// The player view's video mode believes this over the queue row's flag, so ATV must classify

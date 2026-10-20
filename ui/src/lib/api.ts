@@ -1485,9 +1485,6 @@ export const getTranscriptSettings = () =>
 export const setTranscriptSettings = (apiKey?: string, proxyUrl?: string) =>
 	invoke<void>('set_transcript_settings', { apiKey, proxyUrl });
 
-export const getOpenRouterToken = () =>
-	invoke<string | null>('get_openrouter_token');
-
 export const setOpenRouterToken = (token: string) =>
 	invoke<void>('set_openrouter_token', { token });
 
@@ -1499,6 +1496,45 @@ export const getAiCacheCount = () =>
 
 export const testOpenRouterToken = (token: string) =>
 	invoke<string>('test_openrouter_token', { token });
+
+export interface AiProviderInfo {
+	id: 'openrouter' | 'nvidia' | 'cloudflare' | string;
+	name: string;
+	enabled: boolean;
+	configured: boolean;
+	has_token: boolean;
+	account_id: string;
+	model: string;
+	docs_url: string;
+	description: string;
+}
+
+export const getAiProviders = () =>
+	invoke<AiProviderInfo[]>('get_ai_providers');
+
+/**
+ * Save one provider. A blank `apiKey` leaves the stored token untouched; the UI never
+ * sends a saved secret back to the backend just to toggle a switch or change the account
+ * id. `clearToken` removes the stored token explicitly.
+ */
+export const setAiProvider = (
+	provider: string,
+	enabled: boolean,
+	apiKey?: string,
+	accountId?: string,
+	clearToken?: boolean
+) =>
+	invoke<AiProviderInfo>('set_ai_provider', {
+		provider,
+		enabled,
+		apiKey,
+		accountId,
+		clearToken
+	});
+
+/** Test saved credentials, or the values currently typed in the settings card. */
+export const testAiProvider = (provider: string, apiKey?: string, accountId?: string) =>
+	invoke<string>('test_ai_provider', { provider, apiKey, accountId });
 
 export interface SubscribedChannel {
 	id: string;

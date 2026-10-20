@@ -62,7 +62,7 @@
 	];
 
 	let activeTab = $state<PromptCategory>('learning_dictionary');
-	let hasToken = $state(true);
+	let needsSetup = $state(false);
 	let copied = $state(false);
 	let mining = $state(false);
 
@@ -190,8 +190,16 @@
 				cached: false,
 				error: msg
 			};
-			if (msg.includes('Token OpenRouter belum diatur') || msg.includes('401')) {
-				hasToken = false;
+			const lower = msg.toLowerCase();
+			if (
+				lower.includes('belum ada penyedia ai') ||
+				lower.includes('diatur') ||
+				lower.includes('pengaturan') ||
+				lower.includes('api key') ||
+				(lower.includes('token') &&
+					(lower.includes('tidak valid') || lower.includes('izin') || lower.includes('belum diisi')))
+			) {
+				needsSetup = true;
 			}
 		} finally {
 			if (inFlight.get(category) === gen) inFlight.delete(category);
@@ -206,18 +214,13 @@
 		TABS.forEach((t) => (tabLoading[t.id] = false));
 		tabLoading[activeTab] = true;
 
-		const token = await api.getOpenRouterToken();
-		if (gen !== loadGeneration) return;
-		if (!token || !token.trim()) {
-			hasToken = false;
-			TABS.forEach((t) => (tabLoading[t.id] = false));
-			return;
-		}
-		hasToken = true;
+		needsSetup = false;
 
 		// The tab the reader is looking at gets the first (and only) request. Once it is
 		// done, prefetch the rest one at a time so a slow free model cannot starve it.
+		// Cached answers also pass through this path, so no provider pre-check is needed.
 		await loadSingleTab(activeTab, force);
+		if (gen !== loadGeneration || needsSetup) return;
 
 		for (const tab of TABS) {
 			if (gen !== loadGeneration) return;
@@ -427,16 +430,17 @@
 
 	<!-- Body Content -->
 	<div class="flex-1 overflow-y-auto my-3 pr-1 min-h-[140px] max-h-[380px] scrollbar-thin text-xs text-foreground leading-relaxed select-text">
-		{#if !hasToken}
-			<!-- Missing Token State -->
+		{#if needsSetup && !content}
+			<!-- No active provider / setup required -->
 			<div class="flex flex-col items-center justify-center gap-3 py-6 px-3 text-center">
 				<div class="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
 					<HugeiconsIcon icon={Settings02Icon} size={20} />
 				</div>
 				<div class="space-y-1 max-w-sm">
-					<h3 class="text-sm font-bold text-foreground">Token OpenRouter Belum Diatur</h3>
+					<h3 class="text-sm font-bold text-foreground">Penyedia AI Belum Aktif</h3>
 					<p class="text-xs text-muted-foreground leading-relaxed">
-						Untuk menggunakan fitur AI Tutor (Ctrl + Klik), cukup tempelkan API Key OpenRouter gratis Anda di menu Pengaturan. Model gratis terbaik dan fallback otomatis dikelola oleh Limusic.
+						Untuk menggunakan fitur AI Tutor (Ctrl + Klik), aktifkan salah satu penyedia di menu Pengaturan:
+						OpenRouter, NVIDIA NIM, atau Cloudflare Workers AI. Limusic otomatis memakai fallback berurutan.
 					</p>
 				</div>
 				<Button
@@ -445,7 +449,7 @@
 					class="gap-1.5 mt-1 text-xs cursor-pointer"
 				>
 					<HugeiconsIcon icon={Settings02Icon} size={14} />
-					<span>Buka Pengaturan & Tempel Token</span>
+					<span>Buka Pengaturan Penyedia AI</span>
 				</Button>
 			</div>
 		{:else if content}

@@ -5,12 +5,9 @@
 		Tick02Icon,
 		BookOpenTextIcon,
 		ViewOffSlashIcon,
-		ViewIcon,
-		Key01Icon,
 		SparklesIcon,
 		Layers01Icon,
-		InformationCircleIcon,
-		ExternalLinkIcon
+		InformationCircleIcon
 	} from '@hugeicons/core-free-icons';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
@@ -18,6 +15,7 @@
 	import { toast } from '$lib/player.svelte';
 	import * as api from '$lib/api';
 	import VocabOnboardingModal from '$lib/components/VocabOnboardingModal.svelte';
+	import AiProvidersSettings from '$lib/components/AiProvidersSettings.svelte';
 	import vocabData from '$lib/data/vocab-levels.json';
 
 	const GROUP = 'mb-7 last:mb-1';
@@ -127,53 +125,14 @@
 		}
 	}
 
-	let openRouterToken = $state('');
-	let showToken = $state(false);
-	let savingToken = $state(false);
-	let testingToken = $state(false);
-	let testStatus = $state<{ success: boolean; message: string; model?: string } | null>(null);
 	let aiCacheCount = $state(0);
 	let clearingAiCache = $state(false);
 
 	async function loadAiSettings() {
 		try {
-			openRouterToken = (await api.getOpenRouterToken()) || '';
 			aiCacheCount = await api.getAiCacheCount();
 		} catch (e) {
 			console.error('Failed to load AI settings:', e);
-		}
-	}
-
-	async function handleSaveToken() {
-		savingToken = true;
-		try {
-			await api.setOpenRouterToken(openRouterToken.trim());
-			toast('Token OpenRouter berhasil disimpan!');
-		} catch (e: any) {
-			toast.error(`Gagal menyimpan token: ${e?.message || e}`);
-		} finally {
-			savingToken = false;
-		}
-	}
-
-	async function handleTestToken() {
-		const token = openRouterToken.trim();
-		if (!token) {
-			toast.error('Silakan masukkan token OpenRouter terlebih dahulu.');
-			return;
-		}
-		testingToken = true;
-		testStatus = null;
-		try {
-			const model = await api.testOpenRouterToken(token);
-			testStatus = { success: true, message: 'Koneksi ke OpenRouter aktif & valid!', model };
-			toast(`Koneksi AI aktif! (${model})`);
-		} catch (e: any) {
-			const errMsg = typeof e === 'string' ? e : (e?.message || String(e));
-			testStatus = { success: false, message: errMsg };
-			toast.error(`Koneksi gagal: ${errMsg}`);
-		} finally {
-			testingToken = false;
 		}
 	}
 
@@ -379,136 +338,37 @@
 	</div>
 </section>
 
-<!-- OpenRouter AI Immersion Section -->
+<!-- AI Immersion Providers Section -->
 <section class={GROUP}>
-	<h3 class={LABEL}>Integrasi AI Immersion Tutor (OpenRouter)</h3>
-	<div class={CARD}>
-		<!-- Token Input & Auto-fallback Description -->
-		<div class="px-4 py-4 space-y-3">
-			<div class="flex items-start justify-between gap-4">
-				<div class="min-w-0 flex-1 space-y-1">
-					<div class="flex items-center gap-2">
-						<span class="text-sm font-medium">OpenRouter API Key</span>
-						<span class="inline-flex items-center gap-1 rounded bg-purple-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-purple-600 dark:text-purple-400">
-							<HugeiconsIcon icon={SparklesIcon} size={11} />
-							Multi-Model Fallback
-						</span>
-					</div>
-					<p class="text-xs text-muted-foreground leading-relaxed">
-						Dukung pemahaman imersif mendalam via <strong>Ctrl + Klik</strong> (atau <strong>Cmd + Klik</strong> di macOS) pada kata apa saja.
-						Cukup tempelkan token OpenRouter Anda—Limusic otomatis mengelola rangkaian model gratis terbaik
-						dengan fallback otomatis berkecepatan tinggi tanpa konfigurasi rumit.
-					</p>
-				</div>
-				<button
-					type="button"
-					onclick={() => api.openExternal('https://openrouter.ai/keys')}
-					class="inline-flex items-center gap-1 rounded-md border border-input bg-background/50 px-2 py-1 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground shrink-0 cursor-pointer"
-					title="Dapatkan API key OpenRouter gratis"
-				>
-					<span>Ambil API Key Gratis</span>
-					<HugeiconsIcon icon={ExternalLinkIcon} size={12} />
-				</button>
+	<h3 class={LABEL}>Integrasi AI Immersion Tutor</h3>
+	<AiProvidersSettings />
+
+	<!-- AI SQLite Cache Row -->
+	<div class="mt-3 flex items-center justify-between gap-4 rounded-xl border bg-card px-4 py-3.5">
+		<div class="min-w-0 flex-1 space-y-0.5">
+			<div class="flex items-center gap-2">
+				<span class="text-sm font-medium">Cache Respons AI (SQLite)</span>
+				<span class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+					{aiCacheCount} respons tersimpan
+				</span>
 			</div>
+			<p class="text-xs text-muted-foreground">
+				Penjelasan AI yang pernah di-generate disimpan permanen di database lokal agar tidak membuang token dan langsung muncul instan (&lt; 1ms).
+			</p>
+		</div>
 
-			<!-- Input Row with Show/Hide toggle and Action Buttons -->
-			<div class="flex items-center gap-2 pt-1">
-				<div class="relative flex-1">
-					<div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-muted-foreground">
-						<HugeiconsIcon icon={Key01Icon} size={14} />
-					</div>
-					<input
-						type={showToken ? 'text' : 'password'}
-						bind:value={openRouterToken}
-						placeholder="sk-or-v1-..."
-						class="w-full rounded-lg border border-input bg-background pl-9 pr-10 py-1.5 text-xs text-foreground font-mono placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
-					/>
-					<button
-						type="button"
-						onclick={() => (showToken = !showToken)}
-						class="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground transition hover:text-foreground cursor-pointer"
-						title={showToken ? 'Sembunyikan token' : 'Tampilkan token'}
-					>
-						<HugeiconsIcon icon={showToken ? ViewOffSlashIcon : ViewIcon} size={14} />
-					</button>
-				</div>
-
-				<Button
-					size="sm"
-					variant="secondary"
-					onclick={handleSaveToken}
-					disabled={savingToken}
-					class="shrink-0 text-xs h-8 cursor-pointer"
-				>
-					{#if savingToken}
-						<HugeiconsIcon icon={RefreshIcon} size={13} class="animate-spin mr-1" />
-					{:else}
-						<HugeiconsIcon icon={Tick02Icon} size={13} class="mr-1" />
-					{/if}
-					Simpan
-				</Button>
-
-				<Button
-					size="sm"
-					variant="outline"
-					onclick={handleTestToken}
-					disabled={testingToken || !openRouterToken.trim()}
-					class="shrink-0 text-xs h-8 cursor-pointer"
-				>
-					{#if testingToken}
-						<HugeiconsIcon icon={RefreshIcon} size={13} class="animate-spin mr-1" />
-						Menghubungkan...
-					{:else}
-						<HugeiconsIcon icon={SparklesIcon} size={13} class="mr-1" />
-						Tes Koneksi
-					{/if}
-				</Button>
-			</div>
-
-			<!-- Test Status Banner -->
-			{#if testStatus}
-				<div
-					class="rounded-lg border px-3 py-2 text-xs flex items-center justify-between gap-2 {testStatus.success
-						? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-						: 'border-destructive/30 bg-destructive/10 text-destructive'}"
-				>
-					<span class="font-medium">{testStatus.message}</span>
-					{#if testStatus.model}
-						<span class="rounded bg-background/50 px-1.5 py-0.5 text-[10px] font-mono opacity-80">
-							{testStatus.model}
-						</span>
-					{/if}
-				</div>
+		<Button
+			variant="outline"
+			size="sm"
+			onclick={handleClearAiCache}
+			disabled={aiCacheCount === 0 || clearingAiCache}
+			class="gap-1.5 cursor-pointer shrink-0 text-destructive hover:text-destructive"
+		>
+			{#if clearingAiCache}
+				<HugeiconsIcon icon={RefreshIcon} size={12} class="animate-spin" />
 			{/if}
-		</div>
-
-		<!-- AI SQLite Cache Row -->
-		<div class="flex items-center justify-between gap-4 px-4 py-3.5">
-			<div class="min-w-0 flex-1 space-y-0.5">
-				<div class="flex items-center gap-2">
-					<span class="text-sm font-medium">Cache Respons AI (SQLite)</span>
-					<span class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
-						{aiCacheCount} respons tersimpan
-					</span>
-				</div>
-				<p class="text-xs text-muted-foreground">
-					Penjelasan AI yang pernah di-generate disimpan permanen di database lokal agar tidak membuang token dan langsung muncul instan (&lt; 1ms).
-				</p>
-			</div>
-
-			<Button
-				variant="outline"
-				size="sm"
-				onclick={handleClearAiCache}
-				disabled={aiCacheCount === 0 || clearingAiCache}
-				class="gap-1.5 cursor-pointer shrink-0 text-destructive hover:text-destructive"
-			>
-				{#if clearingAiCache}
-					<HugeiconsIcon icon={RefreshIcon} size={12} class="animate-spin" />
-				{/if}
-				<span>Bersihkan Cache AI</span>
-			</Button>
-		</div>
+			<span>Bersihkan Cache AI</span>
+		</Button>
 	</div>
 </section>
 
