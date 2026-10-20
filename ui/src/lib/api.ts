@@ -1,6 +1,6 @@
 // The UI's only door to Rust. context/11 UI contract — commands in, events out. The UI never
 // touches YouTube; everything here is a Tauri command or event payload.
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { t } from './i18n.svelte';
 
@@ -1447,6 +1447,37 @@ export const aiExplainWord = (
 		systemPrompt,
 		userPrompt
 	});
+
+export type AiStreamEvent =
+	| { type: 'start'; model: string; cached: boolean }
+	| { type: 'delta'; content: string }
+	| { type: 'reset'; model: string }
+	| { type: 'done'; content: string; model: string; cached: boolean };
+
+/**
+ * Streaming variant of {@link aiExplainWord}. Tokens arrive through a Tauri channel while
+ * the command is still running; the promise resolves after the final `done` event (or
+ * rejects if every fallback model failed).
+ */
+export async function aiExplainWordStream(
+	word: string,
+	sentence: string,
+	category: string,
+	systemPrompt: string,
+	userPrompt: string,
+	onEvent: (event: AiStreamEvent) => void
+): Promise<void> {
+	const channel = new Channel<AiStreamEvent>();
+	channel.onmessage = onEvent;
+	await invoke('ai_explain_word_stream', {
+		word,
+		sentence,
+		category,
+		systemPrompt,
+		userPrompt,
+		onEvent: channel
+	});
+}
 
 export const getTranscriptSettings = () =>
 	invoke<{ apiKey: string; proxyUrl: string }>('get_transcript_settings');

@@ -946,6 +946,7 @@ pub fn run() {
             commands::clear_dict_cache,
             commands::get_dict_cache_count,
             commands::ai_explain_word,
+            ai::ai_explain_word_stream,
             commands::get_transcript_settings,
             commands::set_transcript_settings,
             commands::get_openrouter_token,

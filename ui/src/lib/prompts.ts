@@ -37,7 +37,7 @@ Explain the word using this concise Markdown structure:
 
 # [WORD]
 
-[Part of speech]
+**Part of speech:** noun, verb, adjective, or adverb (choose the relevant one)
 
 **Arti utama:** Common Indonesian meanings.
 

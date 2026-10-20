@@ -66,14 +66,15 @@
 	let copied = $state(false);
 	let mining = $state(false);
 
-	// Concurrent per-tab cache & loading states so all 4 tabs load in parallel
+	// Concurrent per-tab cache, but only the visible tab is requested first. Free models
+	// queue per provider, so four simultaneous calls used to make the answer the user was
+	// reading wait behind the other three.
 	let tabCache = $state<Partial<Record<PromptCategory, { content: string; model: string; cached: boolean; error?: string }>>>({});
 	let tabLoading = $state<Partial<Record<PromptCategory, boolean>>>({
-		learning_dictionary: true,
-		word_explanation: true,
-		sentence_breakdown: true,
-		contextual_translation: true
+		learning_dictionary: true
 	});
+	const inFlight = new Map<PromptCategory, number>();
+	let loadGeneration = 0;
 
 	const currentTabData = $derived(tabCache[activeTab]);
 	const loading = $derived(tabLoading[activeTab] ?? false);
@@ -111,12 +112,21 @@
 		}
 	});
 
+	/**
+	 * Streaming load. `loadGeneration` makes results from a previous word (or a closed
+	 * popup) harmless, and `inFlight` keeps a background prefetch and a click on the same
+	 * tab from sending two requests.
+	 */
 	async function loadSingleTab(category: PromptCategory, force = false) {
+		const gen = loadGeneration;
+		if (inFlight.get(category) === gen) return;
 		if (!force && tabCache[category] && !tabCache[category]?.error) {
 			tabLoading[category] = false;
 			return;
 		}
 
+		inFlight.set(category, gen);
+		if (force) tabCache[category] = undefined;
 		tabLoading[category] = true;
 
 		try {
@@ -131,24 +141,52 @@
 			const sysPrompt = interpolatePrompt(config.systemPrompt, vars);
 			const usrPrompt = interpolatePrompt(config.userPrompt, vars);
 
-			const res = await api.aiExplainWord(
+			await api.aiExplainWordStream(
 				cleanWord,
 				sentence,
 				category,
 				sysPrompt,
-				usrPrompt
+				usrPrompt,
+				(event) => {
+					if (gen !== loadGeneration) return;
+					if (event.type === 'start') {
+						// Start is also sent for cache hits; the following delta fills it in.
+						tabCache[category] = {
+							content: '',
+							model: event.model,
+							cached: event.cached
+						};
+					} else if (event.type === 'delta') {
+						const prev = tabCache[category];
+						tabCache[category] = {
+							content: (prev?.content ?? '') + event.content,
+							model: prev?.model ?? '',
+							cached: prev?.cached ?? false
+						};
+					} else if (event.type === 'reset') {
+						tabCache[category] = {
+							content: '',
+							model: event.model,
+							cached: false
+						};
+					} else if (event.type === 'done') {
+						// The final payload is cleaned server-side (intro lines / think tags
+						// removed), so it replaces the raw stream rather than appending.
+						tabCache[category] = {
+							content: event.content,
+							model: event.model,
+							cached: event.cached
+						};
+					}
+				}
 			);
-
-			tabCache[category] = {
-				content: res.content,
-				model: res.model_used,
-				cached: res.from_cache
-			};
 		} catch (e: any) {
+			if (gen !== loadGeneration) return;
 			const msg = e?.message || String(e);
+			const prev = tabCache[category];
 			tabCache[category] = {
-				content: '',
-				model: '',
+				content: prev?.content ?? '',
+				model: prev?.model ?? '',
 				cached: false,
 				error: msg
 			};
@@ -156,12 +194,20 @@
 				hasToken = false;
 			}
 		} finally {
-			tabLoading[category] = false;
+			if (inFlight.get(category) === gen) inFlight.delete(category);
+			if (gen === loadGeneration) tabLoading[category] = false;
 		}
 	}
 
 	async function loadAllTabs(force = false) {
+		const gen = ++loadGeneration;
+		// A new word starts with a clean loading map. Requests from the previous word are
+		// ignored by generation, but their old spinners must not survive into this one.
+		TABS.forEach((t) => (tabLoading[t.id] = false));
+		tabLoading[activeTab] = true;
+
 		const token = await api.getOpenRouterToken();
+		if (gen !== loadGeneration) return;
 		if (!token || !token.trim()) {
 			hasToken = false;
 			TABS.forEach((t) => (tabLoading[t.id] = false));
@@ -169,19 +215,27 @@
 		}
 		hasToken = true;
 
-		// Mark tabs as loading
-		TABS.forEach((t) => {
-			if (force || !tabCache[t.id] || tabCache[t.id]?.error) {
-				tabLoading[t.id] = true;
-			}
-		});
+		// The tab the reader is looking at gets the first (and only) request. Once it is
+		// done, prefetch the rest one at a time so a slow free model cannot starve it.
+		await loadSingleTab(activeTab, force);
 
-		// Trigger all 4 tabs concurrently in parallel!
-		await Promise.allSettled(TABS.map((t) => loadSingleTab(t.id, force)));
+		for (const tab of TABS) {
+			if (gen !== loadGeneration) return;
+			if (tab.id === activeTab) continue;
+			if (!force && tabCache[tab.id] && !tabCache[tab.id]?.error) continue;
+			if (inFlight.get(tab.id) === gen) continue;
+			await loadSingleTab(tab.id, false);
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
 	}
 
 	function switchTab(cat: PromptCategory) {
 		activeTab = cat;
+		// Clicking a tab while the visible one is still streaming is allowed and useful:
+		// only an actual in-flight request or a cached answer blocks a new load.
+		if (!tabCache[cat] && inFlight.get(cat) !== loadGeneration) {
+			loadSingleTab(cat);
+		}
 	}
 
 	async function handleCopy() {
@@ -261,6 +315,7 @@
 	});
 
 	onDestroy(() => {
+		loadGeneration++;
 		window.removeEventListener('keydown', handleKeydown);
 	});
 
@@ -393,12 +448,27 @@
 					<span>Buka Pengaturan & Tempel Token</span>
 				</Button>
 			</div>
+		{:else if content}
+			<!-- Tokens render as they arrive; the small line below keeps the streaming state
+			     visible without replacing the answer with a skeleton. -->
+			<div class="ai-content space-y-1">
+				{@html renderMarkdown(content)}
+			</div>
+			{#if loading}
+				<div class="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+					<HugeiconsIcon icon={RefreshIcon} size={12} class="animate-spin text-primary" />
+					<span>AI sedang menulis...</span>
+				</div>
+			{/if}
+			{#if errorMsg}
+				<p class="mt-2 text-[11px] text-destructive">{errorMsg}</p>
+			{/if}
 		{:else if loading}
-			<!-- Animated Skeleton Loading State -->
+			<!-- Skeleton only until the first token; after that the answer keeps its space. -->
 			<div class="space-y-3 py-3 animate-pulse">
 				<div class="flex items-center gap-2 text-muted-foreground text-xs font-medium">
 					<HugeiconsIcon icon={RefreshIcon} size={13} class="animate-spin text-primary" />
-					<span>Menganalisis dengan AI (multi-model fallback)...</span>
+					<span>AI sedang menulis...</span>
 				</div>
 				<div class="h-4 bg-muted rounded w-2/3"></div>
 				<div class="h-14 bg-muted/60 rounded w-full"></div>
@@ -420,11 +490,6 @@
 					<HugeiconsIcon icon={RefreshIcon} size={13} />
 					<span>Coba Lagi</span>
 				</Button>
-			</div>
-		{:else}
-			<!-- Clean Markdown Rendered Content -->
-			<div class="ai-content space-y-1">
-				{@html renderMarkdown(content)}
 			</div>
 		{/if}
 	</div>
