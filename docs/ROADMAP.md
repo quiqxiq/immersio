@@ -1,64 +1,80 @@
 # Roadmap
 
-Planned work that is not implemented yet. Completed work lives in git history.
+Planned work that is not implemented yet. Completed work lives in git history; the note
+below stays as the design contract for the shipped chat panel.
 
-## Context-aware AI chat panel
+## AI chat panel
 
-**Status:** Planned — proposed design, implementation not started.
+**Status:** Implemented. Kept here as the design contract for future changes.
 
-**Goal:** A chat panel that can answer questions about the article, video, or music
-currently open, and falls back to general conversation when nothing is open.
+**Goal:** A global chat drawer that answers questions about the article, video, or song
+the user explicitly attaches, and works as a general English tutor with no context.
 
-### UX
+### Entry point and layout
 
-- A chat button in the titlebar's right cluster, alongside the account and integration
-  icons. It opens a right-side panel; the left sidebar stays untouched.
-- The panel is a right drawer sized for conversation (about 26rem). It should reserve
-  space on wide screens and overlay with a dismissable scrim on narrow ones.
-- A context card at the top shows what the assistant can see:
-  - article title and source;
-  - video title, channel, and playback position;
-  - track title, artist, album, and playback position;
-  - "General mode" when there is no active content.
-- Users can detach the context and keep chatting generally.
-- Starter prompts adapt to the active content (summarise, explain vocabulary,
-  explain a lyric, practise conversation, and so on).
+- The chat button is in the titlebar's right cluster, before the account menu. It opens
+  a right drawer; there is no new page and no left-sidebar item.
+- The drawer is about 26rem wide, overlays the content area, and uses a dismissable scrim
+  on narrow screens.
+- Chat owns the right slot: opening it closes the queue, lyrics, and comments panels;
+  opening any of those (including the now-playing tabs) closes chat. State is retained
+  while theater mode hides the drawer.
 
-### Context sources
+### Context attachment
 
-- **Article:** the `/articles/read` page sets the active context after extraction
-  succeeds, using clean text/Markdown rather than raw HTML. It clears the context when
-  the page is left.
-- **Video:** active only while the video player view is open, using the current track
-  metadata and the transcript around the active sentence.
-- **Music:** derived from the current track, with lyrics fetched on demand through the
-  existing lyrics backend.
-- **General:** no context payload.
+- Opening chat never attaches the current page or player item. General chat is the
+  default.
+- The drawer offers the currently available article, video, or song through an explicit
+  "Attach" action. Only one attachment can be active at a time.
+- The attached context is always visible as a chip with its label, source, and (for
+  video/music) the position captured at attach or send time.
+- Article priority is article > open video > playing music > none. The article
+  registration is matched against both the route and its `url` query parameter.
+- Video and music snapshots refresh their position when a message is sent. If the
+  underlying item changes, the attachment auto-detaches instead of silently switching;
+  the drawer explains what changed and offers the new content.
+- Opening an old chat does not restore an attachment.
+- Quick actions (`Summarize this article`, `Summarize up to here`, `Explain these
+  lyrics`) attach the content first; their prompts stay English regardless of UI locale.
 
-Proposed priority: article > open video > playing music > general.
+### Backend and streaming
 
-### Backend and privacy
+- `ai_chat_stream` is stateless: it receives the recent turns and at most one current
+  context, then reuses the normal OpenRouter → NVIDIA NIM → Cloudflare fallback chain,
+  cooldowns, SSE parser, and dynamic free-model discovery.
+- Context text is capped at 18k characters, history at 12k characters and 40 turns,
+  and output at 1,200 tokens. Oversized source text is marked as truncated.
+- Attached text is wrapped in an `<attached_context>` block and treated as untrusted
+  source material, not instructions. Delimiters and attribute values are escaped.
+- Chat does not use or populate `ai_cache`.
 
-- Add a streaming `ai_chat_stream` command that reuses the existing provider fallback
-  chain, cooldowns, and SSE parser.
-- Build the context prompt on the backend. Truncate long article, transcript, and lyric
-  text; keep only the recent conversation turns to protect first-token latency.
-- Do not add an extra AI summarisation call before answering, and do not cache chat in
-  the word-explanation cache.
-- API tokens remain backend-only. The frontend never receives or sends saved tokens.
-- Show that context will be sent to the AI provider when a message is submitted.
+### English-only answers
 
-### Open decisions
+- A fixed server-side prompt requires every answer to be English. It cannot be replaced
+  by the UI or overridden by a user message.
+- After a stream completes, `whatlang` checks the prose (ignoring code, block quotes,
+  inline code, URLs, and short answers). A non-English answer gets one corrective retry,
+  then the normal provider fallback. `Done` is never sent with a final non-English answer.
+- Streaming can briefly show a non-English draft before the reset/retry; buffered strict
+  mode is intentionally out of scope for first-token latency.
+- The word popup keeps its existing language behavior. Only the chat panel is
+  English-only.
 
-- Conversation history: one thread per context in memory, or one global thread?
-- Should chat history persist across app restarts?
-- Can the chat panel coexist with the queue/lyrics/comments panels, or should it be
-  mutually exclusive with them in the first version?
+### History and privacy
 
-### Acceptance criteria
+- Recent chats are global, not per article/video/song, and persist in SQLite across app
+  restarts. Users can open, delete one, or clear all.
+- Stored per message: text, role, model, timestamp, and the context kind/id/label/detail.
+  Article text, transcripts, and lyric bodies are never stored in chat history.
+- History sends only message text to the backend; source material is sent only for the
+  current turn's attachment.
+- Saved API tokens remain backend-only and are never returned to or displayed by the
+  frontend.
 
-- Opening an article, video, or track is reflected in the context card.
-- Asking about the active content produces an answer grounded in that content.
-- With nothing open, the panel works as a general chat.
-- Responses stream token by token through the existing AI provider fallback.
-- No saved API token is returned to or displayed by the frontend.
+### Verification
+
+- Rust tests cover context wrapping/truncation, history sanitization, the English guard,
+  provider payloads, and SQLite chat CRUD.
+- Frontend checks cover type safety and production build. Manual verification should cover
+  streaming, attachment/detach, auto-detach, history, panel exclusivity, and the
+  English-only prompts, plus a regression pass on the word popup.

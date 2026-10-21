@@ -5,12 +5,46 @@ use std::sync::Mutex;
 
 use md5::{Digest, Md5};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 
 /// Clearing the lyrics cache spares songs whose source was picked by hand in the lyrics footer (or
 /// their timing nudged): those are the user's choices, not a cache.
 // ponytail: the pin lives in the lyrics JSON rather than a column, it is read nowhere else.
 const CLEAR_LYRICS: &str =
     "DELETE FROM lyrics_cache WHERE lyrics IS NULL OR json_extract(lyrics, '$.pinned') IS NOT 1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageRecord {
+    pub id: String,
+    pub thread_id: String,
+    pub role: String,
+    pub content: String,
+    pub model: Option<String>,
+    pub context_kind: Option<String>,
+    pub context_id: Option<String>,
+    pub context_label: Option<String>,
+    pub context_detail: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatThreadSummary {
+    pub id: String,
+    pub title: String,
+    pub updated_at: i64,
+    pub preview: String,
+    pub message_count: i64,
+    pub last_context_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatThread {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub messages: Vec<ChatMessageRecord>,
+}
 
 pub struct Db(Mutex<Connection>);
 
@@ -301,6 +335,32 @@ impl Db {
                 created_at   INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS ix_ai_cache_word ON ai_cache(word);
+
+            -- Global chat panel. Chats are deliberately not threaded per article/video/song:
+            -- context is a label on a message, and the full source text never lands here.
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                id         TEXT PRIMARY KEY,
+                title      TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_chat_threads_updated
+                ON chat_threads(updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id             TEXT PRIMARY KEY,
+                thread_id      TEXT NOT NULL,
+                role           TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                content        TEXT NOT NULL,
+                model          TEXT,
+                context_kind   TEXT,
+                context_id     TEXT,
+                context_label  TEXT,
+                context_detail TEXT,
+                created_at     INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_chat_messages_thread
+                ON chat_messages(thread_id, created_at);
             "#,
         )?;
         // Migrate pre-Phase-4 DBs that predate the loudness_db column. Errors ("duplicate column")
@@ -1479,6 +1539,145 @@ impl Db {
         let conn = self.0.lock().unwrap();
         conn.query_row("SELECT COUNT(*) FROM ai_cache", [], |r| r.get(0)).unwrap_or(0)
     }
+
+    // --- global chat history ---------------------------------------------------------------
+
+    pub fn create_chat_thread(&self, id: &str, title: &str, now: i64) -> rusqlite::Result<()> {
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO chat_threads(id, title, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?3)",
+            rusqlite::params![id, title, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn append_chat_message(&self, message: &ChatMessageRecord) -> rusqlite::Result<()> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO chat_messages(
+                id, thread_id, role, content, model,
+                context_kind, context_id, context_label, context_detail, created_at
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                message.id,
+                message.thread_id,
+                message.role,
+                message.content,
+                message.model,
+                message.context_kind,
+                message.context_id,
+                message.context_label,
+                message.context_detail,
+                message.created_at
+            ],
+        )?;
+        tx.execute(
+            "UPDATE chat_threads SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![message.created_at, message.thread_id],
+        )?;
+        tx.commit()
+    }
+
+    pub fn list_chat_threads(&self, limit: usize) -> Vec<ChatThreadSummary> {
+        let conn = self.0.lock().unwrap();
+        let mut out = Vec::new();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT t.id, t.title, t.updated_at,
+                COALESCE((SELECT m.content FROM chat_messages m
+                    WHERE m.thread_id = t.id
+                    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1), '') AS preview,
+                (SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id = t.id) AS message_count,
+                (SELECT m.context_label FROM chat_messages m
+                    WHERE m.thread_id = t.id AND m.context_label IS NOT NULL
+                    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_context_label
+             FROM chat_threads t
+             ORDER BY t.updated_at DESC, t.id DESC
+             LIMIT ?1",
+        ) else {
+            return out;
+        };
+        let rows = stmt.query_map(rusqlite::params![limit as i64], |r| {
+            let preview: String = r.get(3)?;
+            Ok(ChatThreadSummary {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                updated_at: r.get(2)?,
+                preview: preview.chars().take(90).collect(),
+                message_count: r.get(4)?,
+                last_context_label: r.get(5)?,
+            })
+        });
+        if let Ok(rows) = rows {
+            out.extend(rows.flatten());
+        }
+        out
+    }
+
+    /// Most recent `limit` messages, returned oldest-first for the transcript.
+    pub fn get_chat_thread(&self, thread_id: &str, limit: usize) -> Option<ChatThread> {
+        let conn = self.0.lock().unwrap();
+        let (id, title, created_at, updated_at) = conn
+            .query_row(
+                "SELECT id, title, created_at, updated_at FROM chat_threads WHERE id = ?1",
+                [thread_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok()?;
+
+        let mut messages = Vec::new();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, thread_id, role, content, model,
+                    context_kind, context_id, context_label, context_detail, created_at
+             FROM (
+                SELECT rowid AS seq, id, thread_id, role, content, model,
+                       context_kind, context_id, context_label, context_detail, created_at
+                FROM chat_messages
+                WHERE thread_id = ?1
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?2
+             )
+             ORDER BY created_at ASC, seq ASC",
+        ) else {
+            return None;
+        };
+        if let Ok(rows) = stmt.query_map(rusqlite::params![thread_id, limit as i64], |r| {
+            Ok(ChatMessageRecord {
+                id: r.get(0)?,
+                thread_id: r.get(1)?,
+                role: r.get(2)?,
+                content: r.get(3)?,
+                model: r.get(4)?,
+                context_kind: r.get(5)?,
+                context_id: r.get(6)?,
+                context_label: r.get(7)?,
+                context_detail: r.get(8)?,
+                created_at: r.get(9)?,
+            })
+        }) {
+            messages.extend(rows.flatten());
+        }
+
+        Some(ChatThread { id, title, created_at, updated_at, messages })
+    }
+
+    pub fn delete_chat_thread(&self, thread_id: &str) -> rusqlite::Result<()> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM chat_messages WHERE thread_id = ?1", [thread_id])?;
+        tx.execute("DELETE FROM chat_threads WHERE id = ?1", [thread_id])?;
+        tx.commit()
+    }
+
+    pub fn clear_chat_history(&self) -> rusqlite::Result<usize> {
+        let mut conn = self.0.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM chat_messages", [])?;
+        let deleted = tx.execute("DELETE FROM chat_threads", [])?;
+        tx.commit()?;
+        Ok(deleted)
+    }
 }
 
 const LOCAL_TRACK_UPSERT: &str =
@@ -1554,6 +1753,84 @@ mod tests {
 
     fn db() -> Db {
         Db::open(std::path::Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn chat_history_persists_metadata_without_source_text() {
+        let d = db();
+        d.create_chat_thread("t1", "First chat", 100).unwrap();
+        d.create_chat_thread("t2", "Second chat", 90).unwrap();
+
+        let message = |id: &str,
+                       thread: &str,
+                       role: &str,
+                       content: &str,
+                       context: Option<&str>,
+                       at: i64| ChatMessageRecord {
+            id: id.to_string(),
+            thread_id: thread.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            model: (role == "assistant").then(|| "test-model".to_string()),
+            context_kind: context.map(|_| "article".to_string()),
+            context_id: context.map(|_| "article-1".to_string()),
+            context_label: context.map(|label| label.to_string()),
+            context_detail: context.map(|_| "Example Source".to_string()),
+            created_at: at,
+        };
+
+        d.append_chat_message(&message(
+            "m1",
+            "t1",
+            "user",
+            "What is this about?",
+            Some("An Article"),
+            101,
+        ))
+        .unwrap();
+        d.append_chat_message(&message(
+            "m2",
+            "t1",
+            "assistant",
+            "It is about testing.",
+            None,
+            102,
+        ))
+        .unwrap();
+        d.append_chat_message(&message("m3", "t2", "user", "Hello", None, 92)).unwrap();
+
+        let list = d.list_chat_threads(30);
+        assert_eq!(list.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t1", "t2"]);
+        assert_eq!(list[0].message_count, 2);
+        assert_eq!(list[0].preview, "It is about testing.");
+        assert_eq!(list[0].last_context_label.as_deref(), Some("An Article"));
+
+        let thread = d.get_chat_thread("t1", 200).unwrap();
+        assert_eq!(thread.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m1", "m2"]);
+        assert_eq!(thread.messages[0].context_label.as_deref(), Some("An Article"));
+        assert_eq!(thread.messages[1].model.as_deref(), Some("test-model"));
+
+        // The limit keeps the newest messages, then returns them oldest-first.
+        let recent = d.get_chat_thread("t1", 1).unwrap();
+        assert_eq!(recent.messages.len(), 1);
+        assert_eq!(recent.messages[0].id, "m2");
+
+        // Chat context is label-only by construction; guard the schema against a future body column.
+        let columns: Vec<String> = {
+            let conn = d.0.lock().unwrap();
+            let mut stmt = conn.prepare("PRAGMA table_info(chat_messages)").unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+            rows.flatten().collect()
+        };
+        assert!(!columns
+            .iter()
+            .any(|c| matches!(c.as_str(), "text" | "body" | "source_text" | "context_text")));
+
+        d.delete_chat_thread("t1").unwrap();
+        assert!(d.get_chat_thread("t1", 200).is_none());
+        assert_eq!(d.list_chat_threads(30).len(), 1);
+        assert_eq!(d.clear_chat_history().unwrap(), 1);
+        assert!(d.list_chat_threads(30).is_empty());
     }
 
     #[test]

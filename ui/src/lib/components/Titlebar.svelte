@@ -3,9 +3,9 @@
 	// with a system frame (`win.chrome`, issue #65) this bar stays as a toolbar and only drops its
 	// own window buttons, since everything else on it is app navigation, not window management.
 	// Everything on the bar is a drag region except the buttons; double-click maximizes (Tauri's
-	// drag region itself). Right cluster: Last.fm scrobbler | separator | minimize / maximize /
-	// close — per the design, the scrobbler lives with the window controls but visually apart.
-	// Account (sign in/out) sits first in that cluster, in its own component.
+	// drag region itself). Right cluster: chat | account | scrobbler/integrations | window
+	// controls. Chat and account read as app destinations; the scrobbler stays visually apart
+	// with the window controls.
 	import { onMount } from 'svelte';
 	import { afterNavigate } from '$app/navigation';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -25,13 +25,15 @@
 		HotspotOfflineIcon,
 		UserGroup02Icon,
 		Link04Icon,
-		Settings02Icon
+		Settings02Icon,
+		AiChat01Icon
 	} from '@hugeicons/core-free-icons';
 	import LastFmIcon from './LastFmIcon.svelte';
 	import DiscordIcon from './DiscordIcon.svelte';
 	import AccountMenu from './AccountMenu.svelte';
 	import { appIcon } from '$lib/appicon.svelte';
 	import * as api from '$lib/api';
+	import { aiChat, togglePanel } from '$lib/aiChat.svelte';
 	import { openMiniPlayer, playback, prefs, refreshView, toast, ui } from '$lib/player.svelte';
 	import { win } from '$lib/win.svelte';
 	import { lt } from '$lib/lt.svelte';
@@ -185,7 +187,28 @@
 	</div>
 
 	<div class="flex h-full items-center">
-		<!-- Account first, then the integrations, then the window controls. The drag region lives on
+		<!-- Global AI chat. It sits before the account because it is a primary destination, not an
+		     integration; the drawer itself lives in the layout's content row. -->
+		<button
+			class="relative flex h-full w-8 items-center justify-center transition-colors {aiChat.open
+				? 'bg-primary/10 text-primary'
+				: 'text-muted-foreground hover:bg-accent/10 hover:text-foreground'}"
+			onclick={togglePanel}
+			title={aiChat.open ? t('chat.close') : t('chat.open')}
+			aria-label={aiChat.open ? t('chat.close') : t('chat.open')}
+			aria-pressed={aiChat.open}
+		>
+			<HugeiconsIcon icon={AiChat01Icon} class="h-4 w-4" />
+			{#if aiChat.streaming && !aiChat.open}
+				<span
+					class="absolute right-1 top-1 h-1.5 w-1.5 animate-pulse rounded-full bg-primary ring-[1.5px] ring-background"
+					aria-hidden="true"
+				></span>
+			{/if}
+		</button>
+		<div class="mx-1.5 h-4 w-px bg-border"></div>
+
+		<!-- Account next, then the integrations, then the window controls. The drag region lives on
 		     <header> only, so these children are ordinary buttons — don't add the attribute here. -->
 		<AccountMenu />
 		<div class="mx-1.5 h-4 w-px bg-border"></div>

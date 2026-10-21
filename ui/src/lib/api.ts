@@ -1479,6 +1479,83 @@ export async function aiExplainWordStream(
 	});
 }
 
+// --- Global AI chat -------------------------------------------------------------------------
+
+export type ChatRole = 'user' | 'assistant';
+
+export interface ChatTurn {
+	role: ChatRole;
+	content: string;
+}
+
+export type ChatContextKind = 'article' | 'video' | 'music';
+
+export interface ChatContextPayload {
+	kind: ChatContextKind;
+	/** Article URL, video id, or track video id. */
+	id: string;
+	title: string;
+	/** Article source, video channel, or track artist. */
+	source?: string;
+	url?: string;
+	/** Article markdown, transcript excerpt, or lyrics excerpt. Never persisted. */
+	text: string;
+	position_ms?: number;
+	position_label?: string;
+}
+
+export interface ChatMessageRecord {
+	id: string;
+	thread_id: string;
+	role: ChatRole;
+	content: string;
+	model?: string | null;
+	context_kind?: ChatContextKind | null;
+	context_id?: string | null;
+	context_label?: string | null;
+	context_detail?: string | null;
+	created_at: number;
+}
+
+export interface ChatThreadSummary {
+	id: string;
+	title: string;
+	updated_at: number;
+	preview: string;
+	message_count: number;
+	last_context_label?: string | null;
+}
+
+export interface ChatThread {
+	id: string;
+	title: string;
+	created_at: number;
+	updated_at: number;
+	messages: ChatMessageRecord[];
+}
+
+/** Stateless streaming chat request. History persistence is handled by the chat_* commands. */
+export async function aiChatStream(
+	messages: ChatTurn[],
+	context: ChatContextPayload | null,
+	onEvent: (event: AiStreamEvent) => void
+): Promise<void> {
+	const channel = new Channel<AiStreamEvent>();
+	channel.onmessage = onEvent;
+	await invoke('ai_chat_stream', { messages, context, onEvent: channel });
+}
+
+export const chatListThreads = () => invoke<ChatThreadSummary[]>('chat_list_threads');
+export const chatGetThread = (threadId: string) =>
+	invoke<ChatThread>('chat_get_thread', { threadId });
+export const chatCreateThread = (id: string, title: string) =>
+	invoke<void>('chat_create_thread', { id, title });
+export const chatAppendMessage = (message: ChatMessageRecord) =>
+	invoke<void>('chat_append_message', { message });
+export const chatDeleteThread = (threadId: string) =>
+	invoke<void>('chat_delete_thread', { threadId });
+export const chatClearHistory = () => invoke<number>('chat_clear_history');
+
 export const getTranscriptSettings = () =>
 	invoke<{ apiKey: string; proxyUrl: string }>('get_transcript_settings');
 

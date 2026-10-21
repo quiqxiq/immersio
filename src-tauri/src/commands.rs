@@ -351,6 +351,76 @@ pub async fn test_openrouter_token(token: String) -> Result<String, String> {
     crate::ai::test_openrouter_connection(&token).await
 }
 
+// --- Global chat history ---------------------------------------------------
+
+#[tauri::command]
+pub fn chat_list_threads(
+    state: St<'_>,
+    limit: Option<u32>,
+) -> Vec<crate::db::ChatThreadSummary> {
+    state.db.list_chat_threads(limit.unwrap_or(30).clamp(1, 100) as usize)
+}
+
+#[tauri::command]
+pub fn chat_get_thread(
+    state: St<'_>,
+    thread_id: String,
+) -> Result<crate::db::ChatThread, String> {
+    state
+        .db
+        .get_chat_thread(&thread_id, 200)
+        .ok_or_else(|| "Percakapan tidak ditemukan.".to_string())
+}
+
+#[tauri::command]
+pub fn chat_create_thread(state: St<'_>, id: String, title: String) -> Result<(), String> {
+    let id = id.trim();
+    let title = title.trim();
+    if id.is_empty() {
+        return Err("Id percakapan kosong.".to_string());
+    }
+    // A thread title is one line in the history list, even when the first message wrapped.
+    let normalized: String = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title: String = if normalized.is_empty() {
+        "New chat".to_string()
+    } else {
+        normalized.chars().take(60).collect()
+    };
+    state
+        .db
+        .create_chat_thread(id, &title, crate::db::now_secs())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn chat_append_message(
+    state: St<'_>,
+    message: crate::db::ChatMessageRecord,
+) -> Result<(), String> {
+    if message.role != "user" && message.role != "assistant" {
+        return Err("Role pesan chat tidak dikenal.".to_string());
+    }
+    if message.content.trim().is_empty() {
+        return Err("Pesan chat kosong.".to_string());
+    }
+    if let Some(kind) = message.context_kind.as_deref() {
+        if !matches!(kind, "article" | "video" | "music") {
+            return Err("Jenis konteks pesan chat tidak dikenal.".to_string());
+        }
+    }
+    state.db.append_chat_message(&message).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn chat_delete_thread(state: St<'_>, thread_id: String) -> Result<(), String> {
+    state.db.delete_chat_thread(&thread_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn chat_clear_history(state: St<'_>) -> Result<usize, String> {
+    state.db.clear_chat_history().map_err(|e| e.to_string())
+}
+
 
 /// One song or video by id, for a pasted YouTube link (#441). `/next` is the one call that answers
 /// with the id's own title, artists and art; the seed comes back as one of its rows.

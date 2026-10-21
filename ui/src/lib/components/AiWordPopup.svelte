@@ -16,6 +16,7 @@
 	import { vocab } from '$lib/vocab.svelte';
 	import { getPrimaryLemma, cleanWordToken } from '$lib/lemma';
 	import { DEFAULT_PROMPTS, interpolatePrompt, type PromptCategory } from '$lib/prompts';
+	import { renderAiMarkdown } from '$lib/aiMarkdown';
 	import { copyText } from '$lib/clipboard';
 	import { toast, ui } from '$lib/player.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -322,29 +323,6 @@
 		window.removeEventListener('keydown', handleKeydown);
 	});
 
-	// Safe, lightweight markdown renderer for clean AI outputs
-	function renderMarkdown(md: string): string {
-		if (!md) return '';
-		return md
-			// Escape html tags to avoid XSS
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			// Headers
-			.replace(/^### (.*$)/gim, '<h4 class="text-xs font-bold text-primary tracking-wide uppercase mt-3 mb-1.5">$1</h4>')
-			.replace(/^## (.*$)/gim, '<h3 class="text-sm font-bold text-foreground mt-3 mb-1.5">$1</h3>')
-			.replace(/^# (.*$)/gim, '<h2 class="text-base font-bold text-primary mt-2 mb-1">$1</h2>')
-			// Bold and italics
-			.replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-foreground">$1</strong>')
-			.replace(/\*(.*?)\*/g, '<em class="italic text-foreground/90">$1</em>')
-			// Inline code / keywords
-			.replace(/`([^`]+)`/g, '<code class="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-primary">$1</code>')
-			// Bullet points with primary styled bullets
-			.replace(/^[•\-\*] (.*$)/gim, '<li class="flex items-start gap-1.5 my-1 text-xs text-foreground/90"><span class="text-primary font-bold select-none">•</span><span>$1</span></li>')
-			// Paragraph breaks
-			.replace(/\n\n/g, '<div class="h-2"></div>')
-			.replace(/\n/g, '<br/>');
-	}
 </script>
 
 <!-- Backdrop click outside detector -->
@@ -456,7 +434,7 @@
 			<!-- Tokens render as they arrive; the small line below keeps the streaming state
 			     visible without replacing the answer with a skeleton. -->
 			<div class="ai-content space-y-1">
-				{@html renderMarkdown(content)}
+				{@html renderAiMarkdown(content)}
 			</div>
 			{#if loading}
 				<div class="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">

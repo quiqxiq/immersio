@@ -82,6 +82,9 @@ feed-rs = "3.0.0"
 readability = "0.3.0"
 htmd = "0.5.6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Chat's English-only contract. Small, offline language detector used after a stream
+# completes; it never touches the network and is not on the first-token path.
+whatlang = "0.16"
 url = "2"
 
 [dev-dependencies]

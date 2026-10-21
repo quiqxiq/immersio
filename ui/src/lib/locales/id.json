@@ -1134,5 +1134,65 @@
 			"not_found": "Tidak dapat menemukan lagu tersebut di YouTube Music.",
 			"cooldown": "YouTube Music meminta Limusic untuk memperlambat proses, sehingga impor dijeda hingga {time}. Semua trek yang telah ditemukan tetap tersimpan."
 		}
+	},
+	"chat": {
+		"open": "Buka chat AI",
+		"close": "Tutup chat",
+		"title": "Tanya Limusic",
+		"subtitle": "AI menjawab dalam bahasa Inggris",
+		"recent": "Percakapan terbaru",
+		"back": "Kembali ke chat",
+		"new": "Chat baru",
+		"english_only": "Asisten selalu menjawab dalam bahasa Inggris, bahkan jika Anda menulis dalam bahasa lain.",
+		"empty_title": "Ada yang bisa saya bantu?",
+		"empty_hint": "Tanyakan tata bahasa, kosakata, atau apa saja. Lampirkan halaman yang sedang Anda baca untuk bertanya tentangnya.",
+		"current_context": "Tersedia di halaman ini",
+		"attach_this": "Lampirkan {kind} ini",
+		"attached": "Konteks terlampir",
+		"detach": "Lepas konteks",
+		"context_sent": "Konteks ini akan dikirim ke penyedia AI.",
+		"context_changed": "Konteks “{old}” dilepas karena konten berubah. Lampirkan “{new}” untuk melanjutkan.",
+		"context_gone": "Konteks “{old}” dilepas karena konten tersebut tidak lagi terbuka.",
+		"attach_new": "Lampirkan konteks baru",
+		"dismiss": "Tutup",
+		"based_on": "Berdasarkan {kind} · {title}",
+		"try": "Coba contoh",
+		"placeholder": "Tanyakan apa saja…",
+		"send": "Kirim",
+		"streaming": "Berpikir…",
+		"copy": "Salin",
+		"copied": "Tersalin",
+		"kind": {
+			"article": "artikel",
+			"video": "video",
+			"music": "lagu"
+		},
+		"quick": {
+			"article": "Ringkas artikel ini",
+			"video": "Ringkas hingga di sini",
+			"music": "Jelaskan lirik ini"
+		},
+		"suggestion": {
+			"grammar": "Jelaskan materi tata bahasa",
+			"conversation": "Latihan percakapan bahasa Inggris",
+			"vocabulary": "Ajari kosakata berguna"
+		},
+		"history": {
+			"title": "Percakapan terbaru",
+			"subtitle": "Percakapan global",
+			"empty": "Belum ada percakapan",
+			"empty_hint": "Percakapan Anda akan muncul di sini setelah pesan pertama dikirim.",
+			"just_now": "Baru saja",
+			"open": "Buka percakapan",
+			"delete": "Hapus percakapan",
+			"confirm_delete": "Hapus percakapan ini?",
+			"confirm_delete_short": "Yakin?",
+			"clear_all": "Hapus semua riwayat chat",
+			"confirm_clear": "Hapus semuanya? Klik lagi untuk konfirmasi."
+		},
+		"error": {
+			"title": "Tidak dapat memperoleh jawaban",
+			"settings": "Buka pengaturan AI"
+		}
 	}
 }

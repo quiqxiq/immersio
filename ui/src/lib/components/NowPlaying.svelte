@@ -21,6 +21,7 @@
 	} from '@hugeicons/core-free-icons';
 	import * as Tabs from '$lib/components/ui/tabs';
 	import * as api from '$lib/api';
+	import { closePanel } from '$lib/aiChat.svelte';
 	import {
 		np,
 		openAddToPlaylist,
@@ -377,7 +378,12 @@
 	>
 		<Tabs.Root
 			value={np.tab}
-			onValueChange={(v) => (np.tab = v as typeof np.tab)}
+			onValueChange={(v) => {
+				// The chat drawer owns the right slot while it is open; switching this view's tabs
+				// counts as opening the queue/lyrics/comments panel.
+				closePanel();
+				np.tab = v as typeof np.tab;
+			}}
 			class="min-h-0 flex-1 {stage ? 'gap-0' : ''}"
 		>
 			<div

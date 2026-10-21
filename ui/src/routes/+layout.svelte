@@ -34,6 +34,7 @@
 	import QueuePanel from '$lib/components/QueuePanel.svelte';
 	import LyricsPanel from '$lib/components/LyricsPanel.svelte';
 	import CommentsPanel from '$lib/components/CommentsPanel.svelte';
+	import ChatPanel from '$lib/components/ChatPanel.svelte';
 	import AddToPlaylist from '$lib/components/AddToPlaylist.svelte';
 	import NewPlaylistDialog from '$lib/components/NewPlaylistDialog.svelte';
 	import SettingsDialog from '$lib/components/SettingsDialog.svelte';
@@ -54,6 +55,7 @@
 	import KeyboardShortcuts from '$lib/components/KeyboardShortcuts.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { auth, initApp, np, playback, prefs, ui } from '$lib/player.svelte';
+	import { aiChat, closePanel } from '$lib/aiChat.svelte';
 	import { isLocalId } from '$lib/api';
 	import { video } from '$lib/video.svelte';
 	import { win, initWin } from '$lib/win.svelte';
@@ -154,6 +156,14 @@
 	let lyricsOpen = $state(false);
 	let commentsOpen = $state(false);
 	let showVocabOnboarding = $state(false);
+	// One right slot in v1: opening the chat drawer puts the queue, lyrics, and comments away.
+	// Those three stay independent of each other as before; their own handlers close the chat.
+	$effect(() => {
+		if (!aiChat.open) return;
+		queueOpen = false;
+		lyricsOpen = false;
+		commentsOpen = false;
+	});
 	// Two ways the now-playing view and these panels can divide the same two buttons, picked in
 	// settings (#62). Tabbed (the default): the view carries queue and lyrics itself, so the panels
 	// step aside for it and the bar's buttons switch its tabs. Off: these are the only owner, the
@@ -337,6 +347,9 @@
 					queueOpen={showQueue}
 				/>{/if}
 			{#if showQueue}<QueuePanel onClose={() => (queueOpen = false)} />{/if}
+			<!-- Always mounted: an in-flight stream and context auto-detach must keep running while
+			     the drawer is closed. It renders nothing until opened. -->
+			<ChatPanel />
 		</div>
 		{#if playback.now}
 			<!-- Slides up from its own height on first play; leaves instantly (bar removal is rare).
@@ -345,9 +358,14 @@
 			     earlier in the DOM, which is what puts it behind the bar as it slides in and out. -->
 			<div class="relative z-20" in:fly={{ y: 64, duration: 250, easing: cubicOut }}>
 				<PlayerBar
-					onToggleQueue={() => (tabbed ? (np.tab = 'queue') : (queueOpen = !queueOpen))}
+					onToggleQueue={() => {
+						closePanel();
+						if (tabbed) np.tab = 'queue';
+						else queueOpen = !queueOpen;
+					}}
 					queueOpen={tabbed ? np.tab === 'queue' : queueOpen}
 					onToggleLyrics={() => {
+						closePanel();
 						if (tabbed) np.tab = 'lyrics';
 						else {
 							lyricsOpen = !lyricsOpen;
@@ -356,6 +374,7 @@
 					}}
 					lyricsOpen={tabbed ? np.tab === 'lyrics' : lyricsOpen}
 					onToggleComments={() => {
+						closePanel();
 						if (tabbed) np.tab = 'comments';
 						else {
 							commentsOpen = !commentsOpen;

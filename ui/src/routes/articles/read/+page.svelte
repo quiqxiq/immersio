@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { HugeiconsIcon } from '@hugeicons/svelte';
@@ -30,6 +30,7 @@
 	import { vocab } from '$lib/vocab.svelte';
 	import { cleanWordToken } from '$lib/lemma';
 	import { tts } from '$lib/tts.svelte';
+	import { clearArticleContext, setArticleContext } from '$lib/aiChat.svelte';
 
 	let loading = $state(true);
 	let article = $state<ArticleContent | null>(null);
@@ -54,6 +55,7 @@
 	const targetUrl = $derived(page.url.searchParams.get('url') || '');
 	const fallbackTitle = $derived(page.url.searchParams.get('title') || '');
 	const fallbackSource = $derived(page.url.searchParams.get('source') || '');
+	let requestedUrl = '';
 
 	/**
 	 * Transform article HTML into interactive sentence and word tokens
@@ -140,8 +142,9 @@
 		}
 	}
 
-	async function loadArticle() {
-		if (!targetUrl) {
+	async function loadArticle(url = targetUrl) {
+		const requested = url;
+		if (!requested) {
 			error = 'URL artikel tidak ditemukan.';
 			loading = false;
 			return;
@@ -150,16 +153,24 @@
 		loading = true;
 		error = null;
 		selectedWord = null;
+		article = null;
+		processedHtml = '';
+		articleSentences = [];
 
 		try {
-			const res = await api.extractArticle(targetUrl);
+			const res = await api.extractArticle(requested);
+			// A slower request for the previous article must not replace the current one.
+			if (requested !== targetUrl) return;
 			article = res;
 			processedHtml = enhanceHtmlWithTokens(res.html);
+			setArticleContext(res, requested);
 		} catch (e: any) {
+			if (requested !== targetUrl) return;
+			clearArticleContext(requested);
 			console.error('Failed to extract article:', e);
 			error = e?.message || 'Gagal mengekstrak isi artikel. Website mungkin memblokir akses atau memerlukan login.';
 		} finally {
-			loading = false;
+			if (requested === targetUrl) loading = false;
 		}
 	}
 
@@ -341,12 +352,28 @@
 		return `${minutes} menit baca`;
 	}
 
-	onMount(() => {
-		loadArticle();
+	// Reading a different article keeps the same route component alive, so watch the query rather
+	// than loading once on mount. The old registration is cleared before the new extract starts;
+	// ChatPanel must never see article A while the route already says article B.
+	$effect(() => {
+		const url = targetUrl;
+		if (!url) {
+			if (requestedUrl) clearArticleContext(requestedUrl);
+			requestedUrl = '';
+			article = null;
+			error = 'URL artikel tidak ditemukan.';
+			loading = false;
+			return;
+		}
+		if (url === requestedUrl) return;
+		if (requestedUrl) clearArticleContext(requestedUrl);
+		requestedUrl = url;
+		void loadArticle(url);
 	});
 
 	onDestroy(() => {
 		tts.stop();
+		if (requestedUrl) clearArticleContext(requestedUrl);
 	});
 
 	$effect(() => {
@@ -539,7 +566,7 @@
 					<p class="text-xs text-muted-foreground max-w-md mx-auto">{error}</p>
 				</div>
 				<div class="flex flex-wrap items-center justify-center gap-2.5 pt-2">
-					<Button variant="outline" size="sm" onclick={loadArticle} class="rounded-full text-xs">
+					<Button variant="outline" size="sm" onclick={() => loadArticle()} class="rounded-full text-xs">
 						<HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={13} class="mr-1.5" />
 						Coba Lagi
 					</Button>
