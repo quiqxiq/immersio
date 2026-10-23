@@ -1263,6 +1263,17 @@
 		"placeholder": "Ask anything…",
 		"send": "Send",
 		"streaming": "Thinking…",
+		"thinking": {
+			"label": "Thinking mode",
+			"auto": "Auto",
+			"think": "Think",
+			"none": "None",
+			"auto_hint": "Limusic decides when a question needs deeper reasoning.",
+			"think_hint": "Ask the model to reason more deeply. The thinking process stays hidden.",
+			"none_hint": "Answer directly without extra reasoning.",
+			"active": "Thinking…",
+			"active_deep": "Thinking deeper…"
+		},
 		"copy": "Copy",
 		"copied": "Copied",
 		"kind": {

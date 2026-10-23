@@ -16,7 +16,7 @@
 	import { vocab } from '$lib/vocab.svelte';
 	import { getPrimaryLemma, cleanWordToken } from '$lib/lemma';
 	import { DEFAULT_PROMPTS, interpolatePrompt, type PromptCategory } from '$lib/prompts';
-	import { renderAiMarkdown } from '$lib/aiMarkdown';
+	import AiMarkdown from '$lib/components/AiMarkdown.svelte';
 	import { copyText } from '$lib/clipboard';
 	import { toast, ui } from '$lib/player.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -433,9 +433,7 @@
 		{:else if content}
 			<!-- Tokens render as they arrive; the small line below keeps the streaming state
 			     visible without replacing the answer with a skeleton. -->
-			<div class="ai-content space-y-1">
-				{@html renderAiMarkdown(content)}
-			</div>
+			<AiMarkdown content={content} class="ai-content" />
 			{#if loading}
 				<div class="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
 					<HugeiconsIcon icon={RefreshIcon} size={12} class="animate-spin text-primary" />

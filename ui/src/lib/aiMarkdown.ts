@@ -1,33 +1,40 @@
+import MarkdownIt from 'markdown-it';
+
 /**
- * Small, safe Markdown renderer for AI responses. It deliberately escapes HTML before applying
- * a handful of formatting rules; AI output is never trusted as raw HTML.
- *
- * Shared by the word popup and the global chat panel so both keep the same typography.
+ * Shared Markdown renderer for AI output. AI responses are untrusted text, so raw HTML is
+ * disabled outright; the parser only emits the tags it owns. Links are restricted to http(s),
+ * and images are rendered as alt text so a response cannot trigger remote loads.
  */
-export function renderAiMarkdown(md: string): string {
-	if (!md) return '';
-	return md
-		// Escape html tags to avoid XSS
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		// Fenced code blocks (the content is already escaped)
-		.replace(
-			/```(?:\w+)?\n?([\s\S]*?)```/g,
-			'<pre class="my-2 overflow-x-auto rounded-lg bg-muted p-2 text-[11px] leading-relaxed"><code>$1</code></pre>'
-		)
-		// Headers
-		.replace(/^### (.*$)/gim, '<h4 class="text-xs font-bold text-primary tracking-wide uppercase mt-3 mb-1.5">$1</h4>')
-		.replace(/^## (.*$)/gim, '<h3 class="text-sm font-bold text-foreground mt-3 mb-1.5">$1</h3>')
-		.replace(/^# (.*$)/gim, '<h2 class="text-base font-bold text-primary mt-2 mb-1">$1</h2>')
-		// Bold and italics
-		.replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold text-foreground">$1</strong>')
-		.replace(/\*(.*?)\*/g, '<em class="italic text-foreground/90">$1</em>')
-		// Inline code / keywords
-		.replace(/`([^`]+)`/g, '<code class="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-primary">$1</code>')
-		// Bullet points with primary styled bullets
-		.replace(/^[•\-\*] (.*$)/gim, '<li class="flex items-start gap-1.5 my-1 text-xs text-foreground/90"><span class="text-primary font-bold select-none">•</span><span>$1</span></li>')
-		// Paragraph breaks
-		.replace(/\n\n/g, '<div class="h-2"></div>')
-		.replace(/\n/g, '<br/>');
+const md = new MarkdownIt({
+	html: false,
+	breaks: true,
+	linkify: true,
+	typographer: false
+});
+
+md.validateLink = (url) => /^https?:\/\//i.test(url.trim());
+
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+	tokens[idx].attrSet('target', '_blank');
+	tokens[idx].attrSet('rel', 'noopener noreferrer');
+	return self.renderToken(tokens, idx, options);
+};
+
+md.renderer.rules.image = (tokens, idx) => {
+	const alt = tokens[idx].content || 'image';
+	return `<span class="ai-markdown-image-alt">${md.utils.escapeHtml(alt)}</span>`;
+};
+
+/** Close a fenced code block that is still arriving, so a half-streamed answer stays readable. */
+function closeOpenFence(source: string): string {
+	const fences = source.match(/^[ \t]*(`{3,}|~{3,})/gm);
+	if (!fences || fences.length % 2 === 0) return source;
+	const opener = fences[fences.length - 1].trim();
+	return `${source}\n${opener}`;
+}
+
+/** Render untrusted Markdown into safe HTML for the AI chat and word popup. */
+export function renderAiMarkdown(source: string): string {
+	if (!source) return '';
+	return md.render(closeOpenFence(source));
 }

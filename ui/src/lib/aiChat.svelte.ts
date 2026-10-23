@@ -3,12 +3,14 @@
 // The backend command is stateless; this module owns the visible thread, persistence calls,
 // and the attachment lifecycle. Context text is kept only in memory (and only long enough to
 // send it) — chat history stores labels, never the article/lyrics body.
+import { browser } from '$app/environment';
 import * as api from './api';
 import type {
 	ArticleContent,
 	ChatContextKind,
 	ChatContextPayload,
 	ChatMessageRecord,
+	ChatThinkingMode,
 	ChatThreadSummary,
 	ChatTurn,
 	LyricLine,
@@ -24,6 +26,8 @@ export interface ChatAttachment extends ChatContextPayload {
 export interface ChatMessage extends ChatMessageRecord {
 	/** True only for the assistant bubble currently receiving deltas. */
 	streaming?: boolean;
+	/** UI-only snapshot used for the thinking animation label; never persisted. */
+	thinkingMode?: ChatThinkingMode;
 }
 
 export interface ChatNotice {
@@ -42,6 +46,14 @@ interface ArticleChatContext {
 
 let articleContext = $state<ArticleChatContext | null>(null);
 
+const THINKING_STORAGE_KEY = 'limusic_chat_thinking_mode';
+
+function initialThinkingMode(): ChatThinkingMode {
+	if (!browser) return 'auto';
+	const saved = localStorage.getItem(THINKING_STORAGE_KEY);
+	return saved === 'think' || saved === 'none' ? saved : 'auto';
+}
+
 export const aiChat = $state({
 	open: false,
 	view: 'chat' as 'chat' | 'history',
@@ -55,8 +67,14 @@ export const aiChat = $state({
 	streaming: false,
 	loadingThread: false,
 	error: null as string | null,
-	notice: null as ChatNotice | null
+	notice: null as ChatNotice | null,
+	thinkingMode: initialThinkingMode()
 });
+
+export function setThinkingMode(mode: ChatThinkingMode): void {
+	aiChat.thinkingMode = mode;
+	if (browser) localStorage.setItem(THINKING_STORAGE_KEY, mode);
+}
 
 function randomId(): string {
 	return (
@@ -523,35 +541,28 @@ async function sendInner(
 		.filter((message) => !message.streaming && message.content.trim())
 		.map((message) => ({ role: message.role, content: message.content }));
 
+	const thinkingMode = aiChat.thinkingMode;
+	const assistantId = randomId();
+	aiChat.messages.push({
+		...record(threadId, 'assistant', '', context),
+		id: assistantId,
+		streaming: true,
+		thinkingMode
+	});
 	aiChat.streaming = true;
-	let assistantId: string | null = null;
+	let completed = false;
 
 	try {
-		await api.aiChatStream(history, context, (event) => {
-			if (event.type === 'start') {
-				// A retry or fallback sends another Start. Reuse the bubble instead of
-				// leaving the reset one behind as a second, forever-streaming message.
-				const existing = assistantId
-					? aiChat.messages.find((message) => message.id === assistantId)
-					: undefined;
-				if (existing) {
-					existing.model = event.model;
-					existing.streaming = true;
-				} else {
-					assistantId = randomId();
-					aiChat.messages.push({
-						...record(threadId!, 'assistant', '', context, event.model),
-						id: assistantId,
-						streaming: true
-					});
-				}
-				return;
-			}
-			if (!assistantId) return;
+		await api.aiChatStream(history, context, thinkingMode, (event) => {
 			const assistant = aiChat.messages.find((message) => message.id === assistantId);
 			if (!assistant) return;
 
-			if (event.type === 'delta') {
+			if (event.type === 'start') {
+				// A retry or fallback sends another Start. The placeholder is already there,
+				// so just attach the model name and keep the existing bubble.
+				assistant.model = event.model;
+				assistant.streaming = true;
+			} else if (event.type === 'delta') {
 				assistant.content += event.content;
 			} else if (event.type === 'reset') {
 				assistant.content = '';
@@ -560,6 +571,7 @@ async function sendInner(
 				assistant.content = event.content;
 				assistant.model = event.model;
 				assistant.streaming = false;
+				completed = true;
 				const saved: api.ChatMessageRecord = {
 					id: assistant.id,
 					thread_id: assistant.thread_id,
@@ -579,15 +591,15 @@ async function sendInner(
 		});
 	} catch (e) {
 		aiChat.error = String(e);
-		if (assistantId) {
-			const index = aiChat.messages.findIndex((message) => message.id === assistantId);
-			if (index >= 0) aiChat.messages.splice(index, 1);
-		}
 	} finally {
 		aiChat.streaming = false;
-		if (assistantId) {
-			const assistant = aiChat.messages.find((message) => message.id === assistantId);
-			if (assistant) assistant.streaming = false;
+		const assistant = aiChat.messages.find((message) => message.id === assistantId);
+		if (assistant) {
+			assistant.streaming = false;
+			if (!completed) {
+				const index = aiChat.messages.findIndex((message) => message.id === assistantId);
+				if (index >= 0) aiChat.messages.splice(index, 1);
+			}
 		}
 		void refreshThreads();
 	}

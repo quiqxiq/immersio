@@ -14,8 +14,8 @@ the user explicitly attaches, and works as a general English tutor with no conte
 
 - The chat button is in the titlebar's right cluster, before the account menu. It opens
   a right drawer; there is no new page and no left-sidebar item.
-- The drawer is about 26rem wide, overlays the content area, and uses a dismissable scrim
-  on narrow screens.
+- The drawer is about 30rem (480px) wide, overlays the content area, and uses a dismissable
+  scrim on narrow screens.
 - Chat owns the right slot: opening it closes the queue, lyrics, and comments panels;
   opening any of those (including the now-playing tabs) closes chat. State is retained
   while theater mode hides the drawer.
@@ -37,16 +37,46 @@ the user explicitly attaches, and works as a general English tutor with no conte
 - Quick actions (`Summarize this article`, `Summarize up to here`, `Explain these
   lyrics`) attach the content first; their prompts stay English regardless of UI locale.
 
+### Thinking modes
+
+- The composer exposes `Auto`, `Think`, and `None`. The choice is a UI preference stored
+  in localStorage, not part of chat history.
+- `Auto` is Limusic's decision, made per request from the latest user turn. Short,
+  everyday questions stay on the fast path; prompts that ask for comparison, analysis,
+  planning, debugging, or are long enough to need several steps get the reasoning budget.
+- `Think` asks reasoning-capable models to think; `None` explicitly disables it. Models
+  without a thinking switch still answer normally, so the fallback chain never fails just
+  because a fallback model cannot think.
+- Reasoning text is never forwarded to the UI. The assistant placeholder appears as soon
+  as a request starts and shows only an animated “Thinking…” state until the first visible
+  token. Reset/fallback returns the bubble to that state.
+- The word popup has no thinking-mode selector and keeps its existing fast path.
+
 ### Backend and streaming
 
-- `ai_chat_stream` is stateless: it receives the recent turns and at most one current
-  context, then reuses the normal OpenRouter → NVIDIA NIM → Cloudflare fallback chain,
-  cooldowns, SSE parser, and dynamic free-model discovery.
-- Context text is capped at 18k characters, history at 12k characters and 40 turns,
-  and output at 1,200 tokens. Oversized source text is marked as truncated.
+- `ai_chat_stream` is stateless: it receives the recent turns, at most one current
+  context, and the requested thinking mode, then reuses the normal OpenRouter → NVIDIA NIM
+  → Cloudflare fallback chain, cooldowns, SSE parser, and dynamic free-model discovery.
+- Context text is capped at 18k characters, history at 12k characters and 40 turns.
+  Output is capped at 1,200 tokens normally and 2,400 when reasoning is enabled.
+  Oversized source text is marked as truncated.
 - Attached text is wrapped in an `<attached_context>` block and treated as untrusted
   source material, not instructions. Delimiters and attribute values are escaped.
 - Chat does not use or populate `ai_cache`.
+- Streaming first-content timeouts are 9 seconds on the fast path and 40 seconds when
+  reasoning is enabled; total deadlines are 35 and 75 seconds. Before the first visible
+  token the SSE reader waits on the whole first-content budget rather than the 12-second
+  post-token chunk timeout. The word popup keeps its existing timeout.
+
+### Markdown rendering
+
+- Assistant answers are rendered as Markdown view, not raw Markdown source. The shared
+  renderer uses `markdown-it` with raw HTML disabled, and supports headings, lists, code,
+  blockquotes, tables, links, and horizontal rules.
+- Links are limited to http(s) and open through the desktop external-browser path.
+  Images render as alt text so a response cannot trigger remote loads.
+- The renderer is shared with the word popup; the popup's language and request behavior
+  are unchanged.
 
 ### English-only answers
 
@@ -74,7 +104,9 @@ the user explicitly attaches, and works as a general English tutor with no conte
 ### Verification
 
 - Rust tests cover context wrapping/truncation, history sanitization, the English guard,
-  provider payloads, and SQLite chat CRUD.
-- Frontend checks cover type safety and production build. Manual verification should cover
-  streaming, attachment/detach, auto-detach, history, panel exclusivity, and the
-  English-only prompts, plus a regression pass on the word popup.
+  thinking-mode payloads and auto selection, mode-specific budgets/timeouts, and SQLite
+  chat CRUD.
+- Frontend checks cover Markdown safety and GFM output, type safety, and production build.
+  Manual verification should cover streaming, the thinking animation, mode persistence,
+  provider fallback, Markdown tables/code, attachment/detach, auto-detach, history, panel
+  exclusivity, and the English-only prompts, plus a regression pass on the word popup.

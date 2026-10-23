@@ -8,7 +8,7 @@
 		MusicNote01Icon,
 		Tick02Icon
 	} from '@hugeicons/core-free-icons';
-	import { renderAiMarkdown } from '$lib/aiMarkdown';
+	import AiMarkdown from '$lib/components/AiMarkdown.svelte';
 	import { copyText } from '$lib/clipboard';
 	import { t } from '$lib/i18n.svelte';
 	import type { ChatMessage } from '$lib/aiChat.svelte';
@@ -83,24 +83,27 @@
 		>
 			{#if isUser}
 				<p class="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
-			{:else if !message.content && message.streaming}
-				<span class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-					<span class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary"></span>
-					{t('chat.streaming')}
+			{:else if !message.content.trim() && message.streaming}
+				<span
+					class="inline-flex items-center gap-2 text-xs text-muted-foreground"
+					role="status"
+					aria-live="polite"
+				>
+					<span class="thinking-dots" aria-hidden="true">
+						<span></span>
+						<span></span>
+						<span></span>
+					</span>
+					{message.thinkingMode === 'think'
+						? t('chat.thinking.active_deep')
+						: t('chat.thinking.active')}
 				</span>
 			{:else}
-				<div class="ai-chat-markdown break-words leading-relaxed">
-					{@html renderAiMarkdown(message.content)}
-					{#if message.streaming}
-						<span
-							class="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-primary align-[-2px]"
-						></span>
-					{/if}
-				</div>
+				<AiMarkdown content={message.content} streaming={message.streaming} />
 			{/if}
 		</div>
 
-		{#if !isUser && message.content && !message.streaming}
+		{#if !isUser && message.content.trim() && !message.streaming}
 			<div class="mt-1 flex items-center gap-2 px-1 text-[10px] text-muted-foreground">
 				<button
 					type="button"
@@ -125,13 +128,45 @@
 </div>
 
 <style>
-	.ai-chat-markdown :global(p) {
-		margin: 0.35rem 0;
+	.thinking-dots {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2rem;
 	}
-	.ai-chat-markdown :global(ul) {
-		margin: 0.35rem 0;
+
+	.thinking-dots span {
+		width: 0.28rem;
+		height: 0.28rem;
+		border-radius: 9999px;
+		background: var(--primary);
+		animation: thinking-dot 1.2s infinite ease-in-out;
 	}
-	.ai-chat-markdown :global(li) {
-		list-style: none;
+
+	.thinking-dots span:nth-child(2) {
+		animation-delay: 0.15s;
+	}
+
+	.thinking-dots span:nth-child(3) {
+		animation-delay: 0.3s;
+	}
+
+	@keyframes thinking-dot {
+		0%,
+		70%,
+		100% {
+			opacity: 0.25;
+			transform: translateY(0);
+		}
+		35% {
+			opacity: 1;
+			transform: translateY(-0.16rem);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.thinking-dots span {
+			animation: none;
+			opacity: 0.7;
+		}
 	}
 </style>

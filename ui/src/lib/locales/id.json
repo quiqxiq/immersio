@@ -1160,6 +1160,17 @@
 		"placeholder": "Tanyakan apa saja…",
 		"send": "Kirim",
 		"streaming": "Berpikir…",
+		"thinking": {
+			"label": "Mode berpikir",
+			"auto": "Auto",
+			"think": "Think",
+			"none": "None",
+			"auto_hint": "Limusic menentukan sendiri kapan pertanyaan perlu penalaran lebih dalam.",
+			"think_hint": "Minta model berpikir lebih dalam. Proses berpikirnya tetap disembunyikan.",
+			"none_hint": "Jawab langsung tanpa penalaran tambahan.",
+			"active": "Berpikir…",
+			"active_deep": "Berpikir lebih dalam…"
+		},
 		"copy": "Salin",
 		"copied": "Tersalin",
 		"kind": {

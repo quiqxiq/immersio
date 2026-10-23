@@ -28,6 +28,7 @@
 		newChat,
 		refreshThreads,
 		send,
+		setThinkingMode,
 		syncAvailable
 	} from '$lib/aiChat.svelte';
 	import type { ChatContextKind, ChatContextPayload } from '$lib/api';
@@ -69,6 +70,18 @@
 		music:
 			'Explain the meaning of the current lyrics in English. Quote only short phrases from the lyrics, then explain them clearly for a language learner.'
 	};
+
+	const thinkingModes = [
+		{ id: 'auto', label: 'chat.thinking.auto', hint: 'chat.thinking.auto_hint' },
+		{ id: 'think', label: 'chat.thinking.think', hint: 'chat.thinking.think_hint' },
+		{ id: 'none', label: 'chat.thinking.none', hint: 'chat.thinking.none_hint' }
+	] as const;
+
+	function modeButtonClass(id: (typeof thinkingModes)[number]['id']): string {
+		return aiChat.thinkingMode === id
+			? 'bg-primary text-primary-foreground shadow-sm'
+			: 'text-muted-foreground hover:bg-muted hover:text-foreground';
+	}
 
 	// The drawer must be mounted even while closed so an in-flight stream and auto-detach keep
 	// working. This effect tracks the route, the playing item, and the registered article.
@@ -186,7 +199,7 @@
 		bind:this={panelEl}
 		transition:fly={{ x: 36, duration: 220, easing: cubicOut }}
 		class="absolute inset-y-0 right-0 z-40 flex h-full flex-col border-l border-border/70 bg-card/95 shadow-2xl backdrop-blur-sm"
-		style="width:min(420px, calc(100vw - 48px));"
+		style="width:min(480px, calc(100vw - 48px));"
 		role="dialog"
 		aria-modal="false"
 		aria-label={t('chat.title')}
@@ -476,6 +489,32 @@
 						</span>
 					</button>
 				{/if}
+
+				<div class="mb-2 flex flex-wrap items-center justify-between gap-2 px-0.5">
+					<span class="text-[10px] font-medium text-muted-foreground">
+						{t('chat.thinking.label')}
+					</span>
+					<div
+						class="inline-flex rounded-full border border-border/70 bg-background/70 p-0.5"
+						role="group"
+						aria-label={t('chat.thinking.label')}
+					>
+						{#each thinkingModes as mode (mode.id)}
+							<button
+								type="button"
+								class="rounded-full px-2.5 py-1 text-[10px] font-semibold transition-colors disabled:opacity-50 {modeButtonClass(
+									mode.id
+								)}"
+								aria-pressed={aiChat.thinkingMode === mode.id}
+								title={t(mode.hint)}
+								disabled={aiChat.streaming || aiChat.attaching}
+								onclick={() => setThinkingMode(mode.id)}
+							>
+								{t(mode.label)}
+							</button>
+						{/each}
+					</div>
+				</div>
 
 				<form
 					onsubmit={(event) => {

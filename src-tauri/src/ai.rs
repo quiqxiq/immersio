@@ -150,8 +150,8 @@ const CLOUDFLARE_PRIMARY: &str = "@cf/qwen/qwen3-30b-a3b-fp8";
 const CLOUDFLARE_FALLBACK: &str = "@cf/aisingapore/gemma-sea-lion-v4-27b-it";
 const CLOUDFLARE_BACKUP: &str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
-/// `(model, disable_thinking)`. Qwen 3 needs thinking disabled explicitly; without it the
-/// whole token budget is consumed by hidden reasoning and the visible answer is empty.
+/// `(model, thinking_capable)`. Qwen 3 is the only Cloudflare model here with a thinking
+/// switch; the other two fall back to a normal answer when thinking is requested.
 const CLOUDFLARE_MODELS: &[(&str, bool)] = &[
     (CLOUDFLARE_PRIMARY, true),
     (CLOUDFLARE_FALLBACK, false),
@@ -163,6 +163,8 @@ const STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(8);
 const STREAM_FIRST_CONTENT_TIMEOUT: Duration = Duration::from_secs(9);
 const STREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(12);
 const TOTAL_DEADLINE: Duration = Duration::from_secs(35);
+const CHAT_THINK_FIRST_CONTENT_TIMEOUT: Duration = Duration::from_secs(40);
+const CHAT_THINK_TOTAL_DEADLINE: Duration = Duration::from_secs(75);
 const SHORT_COOLDOWN: Duration = Duration::from_secs(45);
 const INVALID_COOLDOWN: Duration = Duration::from_secs(30);
 const GONE_COOLDOWN: Duration = Duration::from_secs(600);
@@ -490,10 +492,104 @@ const MAX_CHAT_CONTEXT_CHARS: usize = 18_000;
 const MAX_CHAT_HISTORY_CHARS: usize = 12_000;
 const MAX_CHAT_TURNS: usize = 40;
 const CHAT_MAX_TOKENS: u32 = 1_200;
+const CHAT_THINK_MAX_TOKENS: u32 = 2_400;
 const CHAT_TEMPERATURE: f64 = 0.3;
+
+/// `auto` is Limusic's decision, not the provider's. A short everyday question should stay
+/// fast; a question that asks for comparison, analysis, a plan, or several sentences gets the
+/// hidden reasoning budget.
+const CHAT_AUTO_THINK_CHARS: usize = 160;
+const CHAT_AUTO_THINK_MARKERS: &[&str] = &[
+    "analisa",
+    "analisis",
+    "analysis",
+    "analyze",
+    "analyzed",
+    "analyzing",
+    "analyse",
+    "analysed",
+    "analysing",
+    "argument",
+    "arguments",
+    "bandingkan",
+    "bedanya",
+    "compare",
+    "compared",
+    "comparing",
+    "comparison",
+    "debug",
+    "debugging",
+    "derive",
+    "difference",
+    "differences",
+    "evaluate",
+    "evaluated",
+    "evaluating",
+    "evaluation",
+    "how does",
+    "in depth",
+    "kenapa",
+    "langkah demi langkah",
+    "main idea",
+    "membandingkan",
+    "menganalisa",
+    "menganalisis",
+    "mengapa",
+    "menguraikan",
+    "merancang",
+    "merencanakan",
+    "perbandingan",
+    "perbedaan",
+    "plan",
+    "planning",
+    "pros and cons",
+    "rancang",
+    "reason",
+    "reasoning",
+    "rencana",
+    "rencananya",
+    "solve",
+    "solved",
+    "solving",
+    "step by step",
+    "strategi",
+    "strategies",
+    "strategy",
+    "summaries",
+    "summarise",
+    "summarised",
+    "summarising",
+    "summarize",
+    "summarized",
+    "summarizing",
+    "summary",
+    "trade-off",
+    "tradeoff",
+    "uraikan",
+    "why",
+];
+
+/// Markers are matched as whole words so a short question about a planet does not look like a
+/// request to plan. Phrases and hyphenated markers fall back to a substring match.
+fn auto_marker_matches(text: &str, marker: &str) -> bool {
+    if marker.contains(' ') || marker.contains('-') {
+        return text.contains(marker);
+    }
+    text.split(|c: char| !c.is_alphanumeric()).any(|word| word == marker)
+}
 
 /// Added for the one corrective retry when a model ignores the English contract.
 const CHAT_LANGUAGE_CORRECTION: &str = "Your previous answer was not in English. Rewrite the entire answer in English. Preserve the content, translate all prose, and do not mention this instruction.";
+
+/// User-visible thinking choice for the global chat. The word popup intentionally has no such
+/// choice; it keeps its existing fast, thinking-disabled request path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatThinkingMode {
+    Auto,
+    Think,
+    None,
+}
 
 /// Events for the popup's streaming path. `Reset` is sent when a model streamed some
 /// content and then failed, so the next model does not append to a half-written answer.
@@ -588,7 +684,9 @@ struct Attempt {
     provider: AiProvider,
     model: String,
     effort: Option<&'static str>,
-    disable_thinking: bool,
+    /// Cloudflare only: whether this model has an `enable_thinking` switch. Other providers
+    /// apply their own thinking options regardless of this field.
+    thinking_capable: bool,
     key: String,
 }
 
@@ -596,13 +694,13 @@ fn make_attempt(
     provider: AiProvider,
     model: &str,
     effort: Option<&'static str>,
-    disable_thinking: bool,
+    thinking_capable: bool,
 ) -> Attempt {
     Attempt {
         provider,
         model: model.to_string(),
         effort,
-        disable_thinking,
+        thinking_capable,
         key: format!("{}:{}", provider.id(), model),
     }
 }
@@ -626,8 +724,8 @@ fn build_attempts(configs: &[ProviderConfig]) -> Vec<Attempt> {
         attempts.push(make_attempt(AiProvider::Nvidia, NVIDIA_MODEL, None, true));
     }
     if cloudflare.is_some() {
-        for &(model, disable_thinking) in CLOUDFLARE_MODELS {
-            attempts.push(make_attempt(AiProvider::Cloudflare, model, None, disable_thinking));
+        for &(model, thinking_capable) in CLOUDFLARE_MODELS {
+            attempts.push(make_attempt(AiProvider::Cloudflare, model, None, thinking_capable));
         }
     }
     if openrouter.is_some() {
@@ -681,11 +779,72 @@ fn apply_provider_options(body: &mut Value, attempt: &Attempt) {
             body["chat_template_kwargs"] = json!({ "enable_thinking": false });
         }
         AiProvider::Cloudflare => {
-            if attempt.disable_thinking {
+            if attempt.thinking_capable {
                 body["chat_template_kwargs"] = json!({ "enable_thinking": false });
             }
         }
     }
+}
+
+/// Chat-specific provider options. Unlike the word popup path, this applies one explicit
+/// decision to every attempt in the fallback chain so a provider switch cannot silently change
+/// how much hidden reasoning the user asked for.
+fn apply_chat_provider_options(body: &mut Value, attempt: &Attempt, thinking: bool) {
+    match attempt.provider {
+        AiProvider::OpenRouter => {
+            let effort = if thinking { "medium" } else { "none" };
+            body["reasoning"] = json!({ "effort": effort, "exclude": true });
+        }
+        AiProvider::Nvidia => {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": thinking });
+        }
+        AiProvider::Cloudflare => {
+            if attempt.thinking_capable {
+                body["chat_template_kwargs"] = json!({ "enable_thinking": thinking });
+            }
+        }
+    }
+}
+
+/// `auto` is Limusic's decision. Keep short questions on the fast path, and reserve hidden
+/// reasoning for prompts that explicitly ask for comparison/analysis or are long enough to need
+/// several steps.
+fn resolve_chat_thinking(mode: ChatThinkingMode, history: &[Value]) -> bool {
+    match mode {
+        ChatThinkingMode::Think => true,
+        ChatThinkingMode::None => false,
+        ChatThinkingMode::Auto => {
+            let Some(text) = history.iter().rev().find_map(|turn| {
+                if turn.get("role").and_then(Value::as_str) == Some("user") {
+                    turn.get("content").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            }) else {
+                return false;
+            };
+            let trimmed = text.trim();
+            if trimmed.chars().count() >= CHAT_AUTO_THINK_CHARS {
+                return true;
+            }
+            let lower = trimmed.to_lowercase();
+            CHAT_AUTO_THINK_MARKERS
+                .iter()
+                .any(|marker| auto_marker_matches(&lower, marker))
+        }
+    }
+}
+
+fn chat_max_tokens(thinking: bool) -> u32 {
+    if thinking { CHAT_THINK_MAX_TOKENS } else { CHAT_MAX_TOKENS }
+}
+
+fn chat_first_content_timeout(thinking: bool) -> Duration {
+    if thinking { CHAT_THINK_FIRST_CONTENT_TIMEOUT } else { STREAM_FIRST_CONTENT_TIMEOUT }
+}
+
+fn chat_total_deadline(thinking: bool) -> Duration {
+    if thinking { CHAT_THINK_TOTAL_DEADLINE } else { TOTAL_DEADLINE }
 }
 
 fn build_body(
@@ -709,9 +868,15 @@ fn build_body(
     body
 }
 
-/// Chat differs from the word popup in two ways that matter for the provider body: it sends a
-/// full role-tagged transcript instead of one system/user pair, and it is never cached.
-fn build_chat_body(system_prompt: &str, history: &[Value], attempt: &Attempt) -> Value {
+/// Chat differs from the word popup in three ways that matter for the provider body: it sends a
+/// full role-tagged transcript instead of one system/user pair, it can ask for hidden reasoning,
+/// and it is never cached.
+fn build_chat_body(
+    system_prompt: &str,
+    history: &[Value],
+    attempt: &Attempt,
+    thinking: bool,
+) -> Value {
     let mut messages = Vec::with_capacity(history.len() + 1);
     messages.push(json!({ "role": "system", "content": system_prompt }));
     messages.extend(history.iter().cloned());
@@ -719,10 +884,10 @@ fn build_chat_body(system_prompt: &str, history: &[Value], attempt: &Attempt) ->
         "model": &attempt.model,
         "messages": messages,
         "temperature": CHAT_TEMPERATURE,
-        "max_tokens": CHAT_MAX_TOKENS,
+        "max_tokens": chat_max_tokens(thinking),
         "stream": true,
     });
-    apply_provider_options(&mut body, attempt);
+    apply_chat_provider_options(&mut body, attempt, thinking);
     body
 }
 
@@ -1476,6 +1641,7 @@ pub async fn ai_chat_stream(
     state: tauri::State<'_, Arc<AppState>>,
     messages: Vec<ChatTurn>,
     context: Option<ChatContextPayload>,
+    thinking_mode: Option<ChatThinkingMode>,
     on_event: Channel<AiStreamEvent>,
 ) -> Result<(), String> {
     if let Some(context) = context.as_ref() {
@@ -1483,13 +1649,15 @@ pub async fn ai_chat_stream(
     }
     let history = sanitize_chat_history(messages)?;
     let system_prompt = build_chat_system_prompt(context.as_ref());
-    query_ai_chat_stream(state.db.as_ref(), system_prompt, history, on_event).await
+    let thinking_mode = thinking_mode.unwrap_or(ChatThinkingMode::Auto);
+    query_ai_chat_stream(state.db.as_ref(), system_prompt, history, thinking_mode, on_event).await
 }
 
 pub async fn query_ai_chat_stream(
     db: &Db,
     system_prompt: String,
     history: Vec<Value>,
+    thinking_mode: ChatThinkingMode,
     on_event: Channel<AiStreamEvent>,
 ) -> Result<(), String> {
     let configs = load_provider_configs(db);
@@ -1502,7 +1670,14 @@ pub async fn query_ai_chat_stream(
     let curated_len = attempts.len();
     let mut dynamic_loaded = false;
     let client = get_stream_client();
-    let deadline = Instant::now() + TOTAL_DEADLINE;
+    let thinking = resolve_chat_thinking(thinking_mode, &history);
+    let deadline = Instant::now() + chat_total_deadline(thinking);
+    tracing::debug!(
+        "AI chat thinking mode {:?} resolved to thinking={} for {} history turns",
+        thinking_mode,
+        thinking,
+        history.len()
+    );
     let mut last_error = String::new();
     let mut index = 0;
 
@@ -1532,7 +1707,7 @@ pub async fn query_ai_chat_stream(
             } else {
                 system_prompt.clone()
             };
-            let body = build_chat_body(&effective_prompt, &history, &attempt);
+            let body = build_chat_body(&effective_prompt, &history, &attempt, thinking);
             let started = Instant::now();
             let request = send_provider_request(
                 client,
@@ -1603,7 +1778,14 @@ pub async fn query_ai_chat_stream(
                 break 'attempt;
             }
 
-            match read_stream(response, &attempt.model, &on_event).await {
+            match read_stream(
+                response,
+                &attempt.model,
+                &on_event,
+                chat_first_content_timeout(thinking),
+            )
+            .await
+            {
                 Ok(outcome) => {
                     let cleaned = clean_ai_output(&outcome.content);
                     if !is_valid_chat_output(&cleaned) {
@@ -1827,7 +2009,14 @@ pub async fn query_ai_immersion_stream(
             continue;
         }
 
-        match read_stream(response, &attempt.model, &on_event).await {
+        match read_stream(
+            response,
+            &attempt.model,
+            &on_event,
+            STREAM_FIRST_CONTENT_TIMEOUT,
+        )
+        .await
+        {
             Ok(outcome) => {
                 let cleaned = clean_ai_output(&outcome.content);
                 if is_valid_immersion_output(&cleaned) {
@@ -1907,18 +2096,21 @@ async fn read_stream(
     response: reqwest::Response,
     requested_model: &str,
     on_event: &Channel<AiStreamEvent>,
+    first_content_timeout: Duration,
 ) -> Result<StreamOutcome, String> {
     let mut stream = response.bytes_stream();
     let mut pending: Vec<u8> = Vec::new();
     let mut content = String::new();
     let mut actual_model = requested_model.to_string();
     let mut emitted = false;
-    let first_content_deadline = Instant::now() + STREAM_FIRST_CONTENT_TIMEOUT;
+    let first_content_deadline = Instant::now() + first_content_timeout;
 
     loop {
         // A reasoning-only model can keep sending hidden reasoning deltas forever while
         // producing no answer. Abort it at the first-content deadline instead of waiting
-        // for max_tokens to run out.
+        // for max_tokens to run out. Before the first visible token, the idle wait must be
+        // the whole first-content budget: a reasoning model may legitimately send no SSE
+        // frame for longer than the normal post-token chunk timeout.
         let now = Instant::now();
         if !emitted && now >= first_content_deadline {
             return Err("model did not start answering in time".to_string());
@@ -1926,7 +2118,7 @@ async fn read_stream(
         let wait = if emitted {
             STREAM_CHUNK_TIMEOUT
         } else {
-            (first_content_deadline - now).min(STREAM_CHUNK_TIMEOUT)
+            first_content_deadline - now
         };
 
         let next = tokio::time::timeout(wait, stream.next()).await;
@@ -2079,8 +2271,8 @@ fn test_attempts(provider: AiProvider) -> Vec<Attempt> {
         }
         AiProvider::Cloudflare => CLOUDFLARE_MODELS
             .iter()
-            .map(|&(model, disable_thinking)| {
-                make_attempt(AiProvider::Cloudflare, model, None, disable_thinking)
+            .map(|&(model, thinking_capable)| {
+                make_attempt(AiProvider::Cloudflare, model, None, thinking_capable)
             })
             .collect(),
     }
@@ -2335,7 +2527,7 @@ mod tests {
             json!({ "role": "user", "content": "Give one example." }),
         ];
         let attempt = make_attempt(AiProvider::Nvidia, NVIDIA_MODEL, None, true);
-        let body = build_chat_body("system rules", &history, &attempt);
+        let body = build_chat_body("system rules", &history, &attempt, false);
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["role"], json!("system"));
@@ -2346,10 +2538,85 @@ mod tests {
         assert_eq!(body["stream"], json!(true));
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false));
 
-        let openrouter = make_attempt(AiProvider::OpenRouter, OPENROUTER_PRIMARY, Some("none"), true);
-        let body = build_chat_body("system", &history, &openrouter);
+        let openrouter = make_attempt(AiProvider::OpenRouter, OPENROUTER_PRIMARY, Some("none"), false);
+        let body = build_chat_body("system", &history, &openrouter, false);
         assert_eq!(body["reasoning"]["effort"], json!("none"));
         assert_eq!(body["reasoning"]["exclude"], json!(true));
+    }
+
+    #[test]
+    fn chat_thinking_mode_selects_body_options_and_budget() {
+        let history = vec![json!({ "role": "user", "content": "Compare these two tenses." })];
+        let nvidia = make_attempt(AiProvider::Nvidia, NVIDIA_MODEL, None, true);
+        let body = build_chat_body("system", &history, &nvidia, true);
+        assert_eq!(body["max_tokens"], json!(CHAT_THINK_MAX_TOKENS));
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(true));
+
+        let openrouter = make_attempt(AiProvider::OpenRouter, OPENROUTER_PRIMARY, Some("none"), false);
+        let body = build_chat_body("system", &history, &openrouter, true);
+        assert_eq!(body["reasoning"]["effort"], json!("medium"));
+        assert_eq!(body["reasoning"]["exclude"], json!(true));
+
+        let qwen = make_attempt(AiProvider::Cloudflare, CLOUDFLARE_PRIMARY, None, true);
+        let body = build_chat_body("system", &history, &qwen, false);
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false));
+
+        let gemma = make_attempt(AiProvider::Cloudflare, CLOUDFLARE_FALLBACK, None, false);
+        let body = build_chat_body("system", &history, &gemma, true);
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn auto_thinking_keeps_short_questions_fast_and_escalates_complex_ones() {
+        let short = vec![json!({ "role": "user", "content": "What does nuance mean?" })];
+        assert!(!resolve_chat_thinking(ChatThinkingMode::Auto, &short));
+
+        let planet = vec![json!({ "role": "user", "content": "What is a planet?" })];
+        assert!(!resolve_chat_thinking(ChatThinkingMode::Auto, &planet));
+
+        let planning = vec![json!({ "role": "user", "content": "Plan a weekly study schedule for me." })];
+        assert!(resolve_chat_thinking(ChatThinkingMode::Auto, &planning));
+
+        let complex = vec![json!({
+            "role": "user",
+            "content": "Compare the past perfect and past simple, then explain why the choice changes the meaning."
+        })];
+        assert!(resolve_chat_thinking(ChatThinkingMode::Auto, &complex));
+
+        let complex_indonesian = vec![json!({
+            "role": "user",
+            "content": "Bandingkan present perfect dan past simple, lalu jelaskan mengapa pilihannya mengubah makna."
+        })];
+        assert!(resolve_chat_thinking(ChatThinkingMode::Auto, &complex_indonesian));
+
+        let simple_indonesian = vec![json!({ "role": "user", "content": "Apa arti nuance?" })];
+        assert!(!resolve_chat_thinking(ChatThinkingMode::Auto, &simple_indonesian));
+
+        let long = vec![json!({ "role": "user", "content": "a".repeat(CHAT_AUTO_THINK_CHARS) })];
+        assert!(resolve_chat_thinking(ChatThinkingMode::Auto, &long));
+
+        assert!(resolve_chat_thinking(ChatThinkingMode::Think, &short));
+        assert!(!resolve_chat_thinking(ChatThinkingMode::None, &complex));
+    }
+
+    #[test]
+    fn chat_thinking_mode_deserializes_and_has_mode_specific_timeouts() {
+        assert_eq!(
+            serde_json::from_str::<ChatThinkingMode>("\"auto\"").unwrap(),
+            ChatThinkingMode::Auto
+        );
+        assert_eq!(
+            serde_json::from_str::<ChatThinkingMode>("\"think\"").unwrap(),
+            ChatThinkingMode::Think
+        );
+        assert_eq!(
+            serde_json::from_str::<ChatThinkingMode>("\"none\"").unwrap(),
+            ChatThinkingMode::None
+        );
+        assert_eq!(chat_first_content_timeout(true), CHAT_THINK_FIRST_CONTENT_TIMEOUT);
+        assert_eq!(chat_total_deadline(true), CHAT_THINK_TOTAL_DEADLINE);
+        assert_eq!(chat_first_content_timeout(false), STREAM_FIRST_CONTENT_TIMEOUT);
+        assert_eq!(chat_total_deadline(false), TOTAL_DEADLINE);
     }
 
     #[test]

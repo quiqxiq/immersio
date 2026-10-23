@@ -1483,6 +1483,9 @@ export async function aiExplainWordStream(
 
 export type ChatRole = 'user' | 'assistant';
 
+/** `auto` lets Limusic pick; the chat command decides per question. */
+export type ChatThinkingMode = 'auto' | 'think' | 'none';
+
 export interface ChatTurn {
 	role: ChatRole;
 	content: string;
@@ -1538,11 +1541,12 @@ export interface ChatThread {
 export async function aiChatStream(
 	messages: ChatTurn[],
 	context: ChatContextPayload | null,
+	thinkingMode: ChatThinkingMode,
 	onEvent: (event: AiStreamEvent) => void
 ): Promise<void> {
 	const channel = new Channel<AiStreamEvent>();
 	channel.onmessage = onEvent;
-	await invoke('ai_chat_stream', { messages, context, onEvent: channel });
+	await invoke('ai_chat_stream', { messages, context, thinkingMode, onEvent: channel });
 }
 
 export const chatListThreads = () => invoke<ChatThreadSummary[]>('chat_list_threads');
